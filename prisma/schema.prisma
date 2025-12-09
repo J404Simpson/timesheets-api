@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model TimesheetEntry {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  workDate  DateTime
+  type      String?
+  project   String?
+  phase     String?
+  startTime String
+  endTime   String
+  hours     Float
+  notes     String?
+}
