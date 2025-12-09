@@ -5,3 +5,10 @@ docker-compose.yml
 *.pem
 *.key
 *.publishsettings
+.env
+.env.*
+.env.example
+docker-compose.yml
+*.pem
+*.key
+*.publishsettings
