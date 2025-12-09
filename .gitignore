@@ -12,3 +12,4 @@ docker-compose.yml
 *.pem
 *.key
 *.publishsettings
+node_modules/
