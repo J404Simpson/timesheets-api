@@ -7,10 +7,16 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model TimesheetEntry {
+model User {
+  id    Int    @id @default(autoincrement())  // Auto-incremented ID
+  name  String                              // A name (string)
+  email String @unique                      // A unique email address
+}
+
+model Timesheet {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
-  workDate  DateTime
+  date  DateTime
   type      String?
   project   String?
   phase     String?
@@ -18,4 +24,8 @@ model TimesheetEntry {
   endTime   String
   hours     Float
   notes     String?
+
+  // Reference to User
+  userId    Int       // Foreign Key to the User
+  user      User      @relation(fields: [userId], references: [id])
 }
