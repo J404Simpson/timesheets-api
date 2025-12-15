@@ -8,15 +8,16 @@ datasource db {
 }
 
 model User {
-  id    Int    @id @default(autoincrement())  // Auto-incremented ID
-  name  String                              // A name (string)
-  email String @unique                      // A unique email address
+  id         Int         @id @default(autoincrement()) // Auto-incremented ID
+  name       String // A name (string)
+  email      String      @unique // A unique email address
+  timesheets Timesheet[] // Reverse relation: One user has many timesheets
 }
 
 model Timesheet {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
-  date  DateTime
+  date      DateTime
   type      String?
   project   String?
   phase     String?
@@ -26,6 +27,6 @@ model Timesheet {
   notes     String?
 
   // Reference to User
-  userId    Int       // Foreign Key to the User
-  user      User      @relation(fields: [userId], references: [id])
+  userId Int // Foreign Key to the User
+  user   User @relation(fields: [userId], references: [id])
 }
