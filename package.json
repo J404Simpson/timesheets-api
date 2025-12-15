@@ -18,6 +18,7 @@
     "fastify-cors": "^6.0.3"
   },
   "devDependencies": {
+    "@types/fastify-cors": "^0.1.0",
     "@types/node": "^20.0.0",
     "prisma": "^5.0.0",
     "ts-node-dev": "^2.0.0",
