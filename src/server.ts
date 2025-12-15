@@ -14,7 +14,7 @@ const server = Fastify({
 });
 
 server.register(cors, {
-  origin: (origin, cb) => {
+  origin: (origin: string | undefined, cb: (err: Error | null, result: boolean) => void) => {
     // allow requests with no origin (like curl/postman)
     if (!origin) return cb(null, true);
     // allow configured origin
