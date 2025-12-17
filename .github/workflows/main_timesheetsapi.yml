@@ -23,21 +23,18 @@ jobs:
         with:
           node-version: '24.x'
 
-      - name: Force Clean Install - Avoid Cache/Corruption Issues
-        run: |
-          npm cache clean --force
-          rm -rf node_modules package-lock.json
-          npm install
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Transpile TypeScript (including prisma.config.ts)
+        run: npx tsc prisma.config.ts --outDir dist
 
       - name: Remove Stale Prisma Artifacts
         run: rm -rf node_modules/.prisma
 
-      - name: Fetch Azure App Configuration
-        run: |
-          echo "Fetching Azure environment variables..."
-          echo "DATABASE_URL=$(printenv DATABASE_URL)" >> $GITHUB_ENV
-
       - name: Build and Generate Prisma Client
+        env:
+          PRISMA_CONFIG_PATH: ./dist/prisma.config.js
         run: |
           npm run build --if-present
           npm run prisma:generate --if-present
