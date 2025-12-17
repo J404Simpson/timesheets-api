@@ -15,6 +15,9 @@ jobs:
     permissions:
       contents: read # This is required for actions/checkout
 
+    env: # Add this section
+      DATABASE_URL: ${{ secrets.DATABASE_URL }} # Reference your GitHub secret for DATABASE_URL
+
     steps:
       - uses: actions/checkout@v4
 
@@ -23,18 +26,14 @@ jobs:
         with:
           node-version: '24.x'
 
-      - name: "Ensure Compatibility - Use Legacy Peer Deps"
-        run: npm config set legacy-peer-deps=true
-
-      - name: "Force Clean Install - Avoid Cache/Corruption Issues"
+      - name: Force Clean Install - Avoid Cache/Corruption Issues
         run: |
           npm cache clean --force
           rm -rf node_modules package-lock.json
           npm install
 
-      - name: Remove Stale Prisma Artifacts for Fresh Binary Downloads
-        run: |
-          rm -rf node_modules/.prisma
+      - name: Remove Stale Prisma Artifacts
+        run: rm -rf node_modules/.prisma
 
       - name: Build and Generate Prisma Client
         run: |
