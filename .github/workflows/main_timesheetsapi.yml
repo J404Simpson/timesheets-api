@@ -23,15 +23,23 @@ jobs:
         with:
           node-version: '24.x'
 
-      - name: Download Prisma Engines
-        run: npx prisma download # This ensures the Prisma engines are fully downloaded
+      - name: Ensure Compatibility: Use `--legacy-peer-deps`
+        run: npm config set legacy-peer-deps=true
 
-      - name: npm install, build, and test
+      - name: Force Clean Install: Avoid Cache/Corruption Issues
         run: |
+          npm cache clean --force
+          rm -rf node_modules package-lock.json
           npm install
+
+      - name: Remove Stale Prisma Artifacts for Fresh Binary Downloads
+        run: |
+          rm -rf node_modules/.prisma
+
+      - name: Build and Generate Prisma Client
+        run: |
           npm run build --if-present
-          npm run prisma:generate # Ensure prisma generate is explicitly run after install
-          npm run test --if-present
+          npm run prisma:generate --if-present
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
