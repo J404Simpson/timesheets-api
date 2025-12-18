@@ -4,11 +4,10 @@ if (isProduction && !process.env.DATABASE_URL) {
   throw new Error('DATABASE_URL is required in production but was not found.');
 }
 
-export default {
+module.exports = {
   db: {
     provider: 'postgresql',
     adapter: 'postgresql',
-    // Use a placeholder during the build phase; Azure sets DATABASE_URL at runtime.
-    url: process.env.DATABASE_URL || 'postgresql://placeholder',
+    url: process.env.DATABASE_URL || 'postgresql://placeholder', // Use placeholder for missing DATABASE_URL in CI
   },
 };
