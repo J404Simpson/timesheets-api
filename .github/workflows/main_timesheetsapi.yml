@@ -28,26 +28,20 @@ jobs:
         run: npm ci
 
       - name: Build the app
-        run: npm run build # Replace this with your build command, if different
+        run: npm run build
 
       - name: Generate Prisma Client
         env:
           NODE_ENV: production
-          DATABASE_URL: "postgresql://placeholder" # Temporary placeholder for prisma generate
+          DATABASE_URL: "postgresql://placeholder"
         run: npx prisma generate
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: ./dist # Replace ./dist with your actual build output folder
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-app
-          path: ./dist # Replace with the correct path to your build output (e.g., ./build or ./out)
-
+          path: ./dist # Matches the build output directory
+          
   deploy:
     runs-on: ubuntu-latest
     needs: build
@@ -59,8 +53,8 @@ jobs:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
-          name: node-app # Matches the name used in the upload artifact step
-      
+          name: node-app
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -74,4 +68,4 @@ jobs:
         with:
           app-name: 'TimesheetsAPI'
           slot-name: 'Production'
-          package: ./dist # Replace this with the location of the downloaded artifact
+          package: ./dist
