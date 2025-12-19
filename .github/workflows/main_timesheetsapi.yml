@@ -16,7 +16,8 @@ jobs:
       contents: read # This is required for actions/checkout
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Node.js version
         uses: actions/setup-node@v3
@@ -26,11 +27,20 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Build and Generate Prisma Client
+      - name: Build the app
+        run: npm run build # Replace this with your build command, if different
+
+      - name: Generate Prisma Client
         env:
           NODE_ENV: production
-          DATABASE_URL: "postgresql://placeholder"
+          DATABASE_URL: "postgresql://placeholder" # Temporary placeholder for prisma generate
         run: npx prisma generate
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
+          path: ./dist # Replace with the correct path to your build output (e.g., ./build or ./out)
 
   deploy:
     runs-on: ubuntu-latest
@@ -43,7 +53,7 @@ jobs:
       - name: Download artifact from build job
         uses: actions/download-artifact@v4
         with:
-          name: node-app
+          name: node-app # Matches the name used in the upload artifact step
       
       - name: Login to Azure
         uses: azure/login@v2
@@ -58,4 +68,4 @@ jobs:
         with:
           app-name: 'TimesheetsAPI'
           slot-name: 'Production'
-          package: .
+          package: ./dist # Replace this with the location of the downloaded artifact
