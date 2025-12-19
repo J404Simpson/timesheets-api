@@ -40,6 +40,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: node-app
+          path: ./dist # Replace ./dist with your actual build output folder
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
           path: ./dist # Replace with the correct path to your build output (e.g., ./build or ./out)
 
   deploy:
