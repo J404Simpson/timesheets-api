@@ -7,25 +7,25 @@ datasource db {
 }
 
 model User {
-  id         Int         @id @default(autoincrement()) // Auto-incremented ID
-  name       String // A name (string)
-  email      String      @unique // A unique email address
-  timesheets Timesheet[] // Reverse relation: One user has many timesheets
+  id         Int              @id @default(autoincrement()) // Auto-incremented ID
+  name       String                                              // A name (string)
+  email      String           @unique                          // A unique email address
+  timesheets TimesheetEntry[]                                 // Reverse relation: One user has many timesheets
 }
 
-model Timesheet {
-  id        String   @id @default(uuid())
-  createdAt DateTime @default(now())
-  date      DateTime
-  type      String?
-  project   String?
-  phase     String?
-  startTime String
-  endTime   String
-  hours     Float
-  notes     String?
+model TimesheetEntry {
+  id        String   @id @default(uuid())                     // Unique ID for each timesheet entry
+  createdAt DateTime @default(now())                          // Timestamp for record creation
+  date      DateTime                                           // The date associated with the entry
+  type      String?                                           // Optional type field
+  project   String?                                           // Optional project field
+  phase     String?                                           // Optional project phase
+  startTime String                                            // Start time of the timesheet entry
+  endTime   String                                            // End time of the timesheet entry
+  hours     Float                                             // Number of hours worked
+  notes     String?                                           // Optional notes for the entry
 
-  // Reference to User
-  userId Int // Foreign Key to the User
-  user   User @relation(fields: [userId], references: [id])
+  // Foreign key relation with User
+  userId    Int
+  user      User @relation(fields: [userId], references: [id]) // Relates TimesheetEntry to the User model
 }
