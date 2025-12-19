@@ -3,7 +3,7 @@ import prisma from "../prismaClient";
 
 type EntryPayload = {
   entry: {
-    workDate: string;
+    date: string; // Updated field name from "workDate" to "date"
     type?: "project" | "internal";
     project?: string;
     phase?: string;
@@ -19,12 +19,12 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.post<{ Body: EntryPayload }>("/timesheet/demo", async (request, reply) => {
     const { entry } = request.body;
 
-    if (!entry || !entry.startTime || !entry.endTime || !entry.workDate) {
+    if (!entry || !entry.startTime || !entry.endTime || !entry.date) { // Updated "workDate" to "date"
       return reply.status(400).send({ error: "Missing required fields" });
     }
 
-    // parse workDate (assumed yyyy-mm-dd) into Date
-    const workDate = new Date(entry.workDate);
+    // Parse date (assumed yyyy-mm-dd) into Date
+    const date = new Date(entry.date); // Updated "workDate" to "date"
 
     const hours =
       typeof entry.hours === "number"
@@ -32,9 +32,9 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         : parseFloat((( (timeToMinutes(entry.endTime) - timeToMinutes(entry.startTime)) / 60 )).toFixed(2));
 
     try {
-      const created = await prisma.timesheetEntry.create({
+      const created = await prisma.timesheet.create({
         data: {
-          workDate,
+          date, // Updated "workDate" to "date"
           type: entry.type,
           project: entry.project,
           phase: entry.phase,
