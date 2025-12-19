@@ -26,14 +26,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Transpile TypeScript (prisma.config.ts)
-        run: npx tsc prisma.config.ts --outDir dist
-
       - name: Build and Generate Prisma Client
         env:
           NODE_ENV: production
           DATABASE_URL: "postgresql://placeholder"
-        run: npx prisma generate --schema prisma/schema.prisma
+        run: npx prisma generate
 
   deploy:
     runs-on: ubuntu-latest
