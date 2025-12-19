@@ -32,9 +32,9 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         : parseFloat((( (timeToMinutes(entry.endTime) - timeToMinutes(entry.startTime)) / 60 )).toFixed(2));
 
     try {
-      const created = await prisma.timesheet.create({
+      const created = await prisma.timesheetEntry.create({
         data: {
-          date, // Updated "workDate" to "date"
+          date, // Matches the Prisma schema
           type: entry.type,
           project: entry.project,
           phase: entry.phase,
