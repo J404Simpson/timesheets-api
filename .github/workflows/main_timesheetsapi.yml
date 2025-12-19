@@ -29,6 +29,7 @@ jobs:
       - name: Build and Generate Prisma Client
         env:
           NODE_ENV: production
+          DATABASE_URL: "postgresql://placeholder"
         run: npx prisma generate
 
   deploy:
