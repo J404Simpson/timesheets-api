@@ -12,10 +12,16 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^7.1.0",
+    "@azure/identity": "^4.13.0",
+    "@azure/keyvault-secrets": "^4.10.0",
+    "@fastify/auth": "^5.0.4",
+    "@fastify/bearer-auth": "^10.1.2",
+    "@prisma/client": "^7.2.0",
+    "axios": "^1.13.2",
     "dotenv": "^16.0.0",
     "fastify": "^4.21.0",
-    "fastify-cors": "^6.0.3"
+    "fastify-cors": "^6.0.3",
+    "jsonwebtoken": "^9.0.3"
   },
   "devDependencies": {
     "@types/fastify-cors": "^0.1.0",
