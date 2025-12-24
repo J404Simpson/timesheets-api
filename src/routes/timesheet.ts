@@ -41,7 +41,8 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           startTime: entry.startTime,
           endTime: entry.endTime,
           hours,
-          notes: entry.notes
+          notes: entry.notes,
+          user: authUserID
         }
       });
 
