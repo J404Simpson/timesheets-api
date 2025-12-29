@@ -1,7 +1,12 @@
 import { FastifyInstance, FastifyPluginOptions } from "fastify";
 import prisma from "../prismaClient";
 
-
+export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
+  // Placeholder routes (empty implementation to avoid breaking anything)
+  fastify.post("/timesheet/demo", async (request, reply) => {
+    reply.status(200).send({ message: "Demo route placeholder" });
+  });
+}
 
 // type EntryPayload = {
 //   entry: {
@@ -16,8 +21,6 @@ import prisma from "../prismaClient";
 //   };
 // };
 
-// export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
-//   // Demo endpoint that stores an entry and returns saved record
 //   fastify.post<{ Body: EntryPayload }>("/timesheet/demo", async (request, reply) => {
 //     const { entry } = request.body;
 
