@@ -57,6 +57,9 @@ jobs:
         with:
           name: node-app
 
+      - name: Debugging - Verify downloaded artifact
+        run: ls -R
+
       - name: Move extracted artifact to dist
         run: mv node-app/* ./dist
 
