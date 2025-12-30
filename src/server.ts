@@ -92,7 +92,7 @@ async function validateToken(
     // Optional: Validate group membership
     if (ALLOWED_GROUPS.length > 0) {
       const userGroups = verifiedToken.groups || [];
-      const isAuthorized = userGroups.some(group => ALLOWED_GROUPS.includes(group));
+      const isAuthorized = userGroups.some((group: string) => ALLOWED_GROUPS.includes(group));
       if (!isAuthorized) {
         reply.status(403).send({ error: "User is not part of an allowed group" });
         return;
