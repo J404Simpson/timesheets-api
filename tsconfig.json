@@ -10,7 +10,8 @@
     "moduleResolution": "Node",
     "resolveJsonModule": true,
     "sourceMap": true,
-    "types": ["node"]
+    "types": ["node"],
+    "typeRoots": ["./node_modules/@types", "./src/types"]
   },
   "include": ["src/**/*", "prisma.config.js"]
 }

@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@types/fastify-cors": "^0.1.0",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.19.27",
     "prisma": "^7.1.0",
     "ts-node": "^10.9.2",
