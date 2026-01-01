@@ -5,6 +5,7 @@ import jwt, { JwtPayload } from "jsonwebtoken";
 import timesheetRoutes from "./routes/timesheet";
 import prisma from "./prismaClient";
 import https from "https"; // For manually fetching JWKS keys
+import rateLimit from "@fastify/rate-limit"; // Import @fastify/rate-limit
 
 dotenv.config();
 
@@ -17,6 +18,13 @@ const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 
 const server = Fastify({ logger: true });
+
+// Register the rate limiter plugin globally
+server.register(rateLimit, {
+  max: 100, // Maximum number of requests per user per minute
+  timeWindow: "1 minute", // Time window for rate limiting
+  ban: 1, // Ban IPs for 1 minute if they exceed the limit
+});
 
 // Cache the JWKS public keys
 let publicKeys: { [key: string]: string } = {};
@@ -87,16 +95,6 @@ async function validateToken(
     if (verifiedToken.tid !== TENANT_ID) {
       reply.status(403).send({ error: "User is not authorized to access this resource" });
       return;
-    }
-
-    // Optional: Validate group membership
-    if (ALLOWED_GROUPS.length > 0) {
-      const userGroups = verifiedToken.groups || [];
-      const isAuthorized = userGroups.some((group: string) => ALLOWED_GROUPS.includes(group));
-      if (!isAuthorized) {
-        reply.status(403).send({ error: "User is not part of an allowed group" });
-        return;
-      }
     }
 
     // Attach user details to request
