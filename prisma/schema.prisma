@@ -32,7 +32,7 @@ model entry {
   type        Boolean
   start_time  DateTime  @db.Time
   end_time    DateTime  @db.Time
-  hours       Float     @db.Decimal(5, 2)
+  hours       Decimal   @db.Decimal(5, 2)
   notes       String?   @db.Text
   created_at  DateTime  @default(now())
 
