@@ -4,28 +4,78 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
-model User {
-  id         Int              @id @default(autoincrement()) // Auto-incremented ID
-  name       String                                              // A name (string)
-  email      String           @unique                          // A unique email address
-  timesheets TimesheetEntry[]                                 // Reverse relation: One user has many timesheets
+model employee {
+  id         Int       @id @default(autoincrement())
+  object_id  String    @unique
+  email      String    @unique
+  first_name String?
+  last_name  String?
+  tenant_id  String?
+  created_at DateTime  @default(now())
+  updated_at DateTime  @default(now())
+  admin      Boolean   @default(false)
+
+  entries    entry[]
+
+  @@map("employee")
 }
 
-model TimesheetEntry {
-  id        String   @id @default(uuid())                     // Unique ID for each timesheet entry
-  createdAt DateTime @default(now())                          // Timestamp for record creation
-  date      DateTime                                           // The date associated with the entry
-  type      String?                                           // Optional type field
-  project   String?                                           // Optional project field
-  phase     String?                                           // Optional project phase
-  startTime String                                            // Start time of the timesheet entry
-  endTime   String                                            // End time of the timesheet entry
-  hours     Float                                             // Number of hours worked
-  notes     String?                                           // Optional notes for the entry
+model entry {
+  id          Int       @id @default(autoincrement())
+  employee_id Int
+  project_id  Int?
+  task_id     Int?
+  phase_id    Int?
+  date        DateTime  @db.Date
+  type        Boolean
+  start_time  DateTime  @db.Time
+  end_time    DateTime  @db.Time
+  hours       Float     @db.Decimal(5, 2)
+  notes       String?   @db.Text
+  created_at  DateTime  @default(now())
 
-  // Foreign key relation with User
-  userId    Int
-  user      User @relation(fields: [userId], references: [id]) // Relates TimesheetEntry to the User model
+  employee    employee  @relation(fields: [employee_id], references: [id], onDelete: Cascade)
+  project     project?  @relation(fields: [project_id], references: [id], onDelete: SetNull)
+  task        task?     @relation(fields: [task_id], references: [id])
+  phase       phase?    @relation(fields: [phase_id], references: [id])
+
+  @@map("entry")
+}
+
+model phase {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?   @db.Text
+  project_id  Int
+  created_at  DateTime  @default(now())
+
+  project     project   @relation(fields: [project_id], references: [id], onDelete: Cascade)
+  entries     entry[]
+
+  @@map("phase")
+}
+
+model project {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?   @db.Text
+  created_at  DateTime  @default(now())
+
+  phases      phase[]
+  entries     entry[]
+
+  @@map("project")
+}
+
+model task {
+  id          Int       @id @default(autoincrement())
+  name        String
+  created_at  DateTime  @default(now())
+
+  entries     entry[]
+
+  @@map("task")
 }
