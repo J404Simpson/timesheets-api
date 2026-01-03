@@ -148,6 +148,9 @@ server.post(
       return;
     }
 
+    // Add this log to confirm the request body data
+    console.log("Request body:", { firstName, lastName, email, object_id });
+
     // Query database to find or create the user
     const user = await prisma.employee.upsert({
       where: { object_id },
@@ -159,6 +162,9 @@ server.post(
         email,
       },
     });
+
+    // Log the result of the `upsert`
+    console.log("Upsert result:", user);
 
     // Respond with success message
     reply.status(200).send({ status: user ? "updated" : "created" });
