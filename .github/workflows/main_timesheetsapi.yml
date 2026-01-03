@@ -42,7 +42,10 @@ jobs:
           name: node-app
           path: |
             ./dist
-            node_modules/.prisma
+            ./node_modules
+            ./package.json
+            ./package-lock.json
+            ./prisma/schema.prisma
 
   deploy:
     runs-on: ubuntu-latest
@@ -58,7 +61,7 @@ jobs:
           name: node-app
 
       - name: Debugging - Verify downloaded artifact
-        run: ls -R # Left here for debugging purposes, you can remove it later
+        run: ls -R --max-depth=2 # Left here for debugging purposes, you can remove it later
 
       - name: Login to Azure
         uses: azure/login@v2
