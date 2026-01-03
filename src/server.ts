@@ -9,6 +9,14 @@ import rateLimit from "@fastify/rate-limit"; // Import @fastify/rate-limit
 
 dotenv.config();
 
+console.log("Starting Fastify server...");
+console.log("Environment variables loaded:", {
+  PORT: process.env.PORT || "Undefined",
+  TENANT_ID: process.env.TENANT_ID || "Undefined",
+  API_AUDIENCE: process.env.API_AUDIENCE || "Undefined",
+  CORS_ORIGIN: process.env.CORS_ORIGIN || "Undefined",
+});
+
 const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const TENANT_ID = process.env.TENANT_ID;
