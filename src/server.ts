@@ -118,10 +118,53 @@ server.register(cors, {
 // Apply token validation to all requests
 server.addHook("onRequest", validateToken);
 
-// Health check route (no auth)
+// Health check route (no auth required)
 server.get("/_health", async () => {
   return { ok: true };
 });
+
+// Route to handle user login data
+server.post(
+  "/login",
+  { preHandler: validateToken }, // Use token validation middleware
+  async (request, reply) => {
+    const { firstName, lastName, email, object_id } = request.body as {
+      firstName: string;
+      lastName: string;
+      email: string;
+      object_id: string;
+    };
+
+    // Extract Object ID from token claims
+    const tokenClaims = request.user as any;
+    const tokenOid = tokenClaims?.oid;
+
+    // Validate object_id matches the one in token claims
+    if (!tokenOid || tokenOid !== object_id) {
+      reply.status(401).send({ error: "Object ID does not match token claims." });
+      return;
+    }
+
+    // Query database to find or create the user
+    const user = await prisma.employee.upsert({
+      where: { object_id },
+      update: {
+        first_name: firstName,
+        last_name: lastName,
+        email,
+      },
+      create: {
+        object_id,
+        first_name: firstName,
+        last_name: lastName,
+        email,
+      },
+    });
+
+    // Respond with success message
+    reply.status(200).send({ status: user ? "updated" : "created" });
+  }
+);
 
 // Register application routes
 server.register(timesheetRoutes, { prefix: "/api" });
