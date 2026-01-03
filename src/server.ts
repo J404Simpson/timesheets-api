@@ -148,11 +148,7 @@ server.post(
     // Query database to find or create the user
     const user = await prisma.employee.upsert({
       where: { object_id },
-      update: {
-        first_name: firstName,
-        last_name: lastName,
-        email,
-      },
+      update: {},
       create: {
         object_id,
         first_name: firstName,
