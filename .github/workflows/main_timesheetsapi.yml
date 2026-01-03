@@ -61,7 +61,7 @@ jobs:
           name: node-app
 
       - name: Debugging - Verify downloaded artifact
-        run: ls -R | head -n 50 # Left here for debugging purposes, you can remove it later
+        run: ls -R ./dist # Left here for debugging purposes, you can remove it later
 
       - name: Login to Azure
         uses: azure/login@v2
