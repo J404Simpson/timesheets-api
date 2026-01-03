@@ -135,6 +135,9 @@ server.post(
       object_id: string;
     };
 
+    // Log to view the token claims
+    console.log("Decoded token claims:", request.user);
+
     // Extract Object ID from token claims
     const tokenClaims = request.user as any;
     const tokenOid = tokenClaims?.oid;
