@@ -33,7 +33,6 @@ jobs:
       - name: Generate Prisma Client
         env:
           NODE_ENV: production
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: npx prisma generate
 
       - name: Upload artifact
