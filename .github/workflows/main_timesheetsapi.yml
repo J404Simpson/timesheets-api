@@ -30,6 +30,14 @@ jobs:
       - name: Build the app
         run: npm run build
 
+      - name: Log Deployment Files
+        run: |
+          echo "Verifying node_modules..."
+          ls -l node_modules/fastify || echo "Fastify module is missing!"
+          ls -l node_modules/@prisma/client || echo "Prisma Client module is missing!"
+          echo "Listing dist folder contents..."
+          ls -l dist
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
