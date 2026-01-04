@@ -38,6 +38,10 @@ jobs:
           echo "Listing dist folder contents..."
           ls -l dist
 
+      - name: Compress node_modules
+        run: |
+          tar -czf node_modules.tar.gz node_modules
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -81,4 +85,5 @@ jobs:
 
       - name: Extract node_modules
         run: |
-          tar -xzf node_modules.tar.gz -C .
+          cd /home/site/wwwroot
+          tar -xzf node_modules.tar.gz
