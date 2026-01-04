@@ -31,16 +31,36 @@ jobs:
       - name: Build the app
         run: npm run build
 
+      - name: Debug build step outputs
+        run: |
+          echo "Debugging current directory:"
+          ls -l
+          echo "Checking 'dist' directory:"
+          ls -l ./dist || echo "'dist' directory is missing!"
+          echo "Checking 'src' directory:"
+          ls -l ./src || echo "'src' directory is missing!"
+          echo "Checking 'node_modules' directory:"
+          ls -l ./node_modules || echo "'node_modules' directory is missing!"
+          echo "Checking Prisma files:"
+          ls -l ./prisma || echo "'prisma' directory is missing!"
+
       - name: Prepare deployment artifact
         run: |
+          echo "Preparing deployment package..."
           mkdir -p deploy
-          cp -R ./dist ./deploy/
-          cp -R ./src ./deploy/
-          cp -R ./node_modules ./deploy/
-          cp ./package.json ./deploy/
-          cp ./package-lock.json ./deploy/
-          cp ./prisma/schema.prisma ./deploy/
-          cp ./prisma/prisma.config.ts ./deploy/
+          [ -d ./dist ] && cp -R ./dist ./deploy/
+          [ -d ./src ] && cp -R ./src ./deploy/
+          [ -d ./node_modules ] && cp -R ./node_modules ./deploy/
+          [ -f ./package.json ] && cp ./package.json ./deploy/
+          [ -f ./package-lock.json ] && cp ./package-lock.json ./deploy/
+          [ -f ./prisma/schema.prisma ] && cp ./prisma/schema.prisma ./deploy/
+          [ -f ./prisma/prisma.config.ts ] && cp ./prisma/prisma.config.ts ./deploy/
+          echo "Completed preparing deployment artifacts."
+
+      - name: Verify contents of deploy directory
+        run: |
+          echo "Verifying contents of the 'deploy' directory:"
+          ls -l ./deploy
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
