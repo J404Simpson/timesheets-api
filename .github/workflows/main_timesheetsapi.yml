@@ -79,6 +79,6 @@ jobs:
           slot-name: 'Production'
           package: .
 
-      - name: Fetch Deployment Logs
+      - name: Extract node_modules
         run: |
-          curl -k "https://timesheetsapi-crgwcbb7d9hjd3cs.scm.westeurope-01.azurewebsites.net/api/deployments/c30c4f5f-30ed-4ed3-9e8f-55badb7f81f9/log" || echo "Deployment logs unavailable"
+          tar -xzf node_modules.tar.gz -C .
