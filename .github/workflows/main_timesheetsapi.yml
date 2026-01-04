@@ -30,11 +30,6 @@ jobs:
       - name: Build the app
         run: npm run build
 
-      - name: Generate Prisma Client
-        env:
-          NODE_ENV: production
-        run: npx prisma generate
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

@@ -8,8 +8,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate:dev": "prisma migrate dev --name init --preview-feature",
-    "postinstall": "prisma generate"
+    "postinstall": "npx prisma generate"
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",
