@@ -86,4 +86,5 @@ jobs:
       - name: Extract node_modules
         run: |
           cd /home/site/wwwroot
-          tar -xzf node_modules.tar.gz
+          mkdir -p node_modules
+          tar -xzf node_modules.tar.gz -C node_modules
