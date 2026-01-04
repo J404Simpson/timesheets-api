@@ -1,4 +1,4 @@
-# Azure Web Apps Deployment Workflow with "Run From Package"
+# Azure Web Apps Deployment Workflow using "Run From Package"
 name: Build and deploy using Azure Run From Package
 
 on:
