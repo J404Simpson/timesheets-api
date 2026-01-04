@@ -1,7 +1,5 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-
-name: Build and deploy Node.js app to Azure Web App - TimesheetsAPI
+# Azure Web Apps Deployment Workflow with "Run From Package"
+name: Build and deploy using Azure Run From Package
 
 on:
   push:
@@ -34,27 +32,35 @@ jobs:
       - name: Build the app
         run: npm run build
 
-      - name: Debug build output
+      - name: Validate build output
         run: |
-          echo "Listing build output:"
-          ls -l ./dist
-          echo "Checking node_modules:"
-          ls -l ./node_modules
-          echo "Checking root files:"
-          ls -l ./package.json ./package-lock.json
+          if [ ! -f ./dist/server.js ]; then
+            echo "Error: dist/server.js not found! Exiting..."
+            exit 1
+          fi
 
-      - name: Upload  artifact
+      - name: Create deployment zip
+        run: |
+          echo "Creating deployment package..."
+          zip -r node-app.zip \
+          ./dist \
+          ./src \
+          ./node_modules \
+          ./package.json \
+          ./package-lock.json \
+          ./prisma/schema.prisma \
+          ./prisma/prisma.config.ts
+
+      - name: Debug zip content
+        run: |
+          echo "Listing deployment package content:"
+          unzip -l node-app.zip
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: |
-            ./dist
-            ./src
-            ./node_modules
-            ./package.json
-            ./package-lock.json
-            ./prisma/schema.prisma
-            ./prisma/prisma.config.ts
+          path: node-app.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -70,6 +76,11 @@ jobs:
           name: node-app
           path: .
 
+      - name: Debug zip file
+        run: |
+          echo "Listing deployment package content:"
+          unzip -l node-app.zip
+
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -83,4 +94,4 @@ jobs:
         with:
           app-name: 'TimesheetsAPI'
           slot-name: 'Production'
-          package: .
+          package: node-app.zip
