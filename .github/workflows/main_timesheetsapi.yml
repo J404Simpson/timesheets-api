@@ -34,7 +34,13 @@ jobs:
       - name: Prepare deployment artifact
         run: |
           mkdir -p deploy
-          cp -R ./package.json ./package-lock.json ./node_modules ./dist ./prisma ./src ./deploy
+          cp -R ./dist ./deploy/
+          cp -R ./src ./deploy/
+          cp -R ./node_modules ./deploy/
+          cp ./package.json ./deploy/
+          cp ./package-lock.json ./deploy/
+          cp ./prisma/schema.prisma ./deploy/
+          cp ./prisma/prisma.config.ts ./deploy/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
