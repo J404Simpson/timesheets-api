@@ -5,4 +5,3 @@ const prisma = new client_1.PrismaClient({
     log: ["query", "info", "warn", "error"],
 });
 exports.default = prisma;
-//# sourceMappingURL=prismaClient.js.map

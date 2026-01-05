@@ -47,7 +47,7 @@ const loadSecrets = async () => {
     catch (err) {
         server.log.error("Failed to load secrets:");
         server.log.error(err);
-        process.exit(1); // Exit the app if secrets cannot be loaded
+        process.exit(1);
     }
 };
 const start = async () => {
@@ -66,4 +66,3 @@ const start = async () => {
     }
 };
 start();
-//# sourceMappingURL=server.js.map

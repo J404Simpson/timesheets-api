@@ -1,11 +1,10 @@
 import Fastify, { FastifyRequest, FastifyReply } from "fastify";
-import cors from "fastify-cors";
 import dotenv from "dotenv";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import timesheetRoutes from "./routes/timesheet";
-import prisma from "./prismaClient";
 import https from "https"; // For manually fetching JWKS keys
-import rateLimit from "@fastify/rate-limit"; // Import @fastify/rate-limit
+import { DefaultAzureCredential } from "@azure/identity";
+import { SecretClient } from "@azure/keyvault-secrets";
 
 dotenv.config();
 
@@ -13,26 +12,19 @@ console.log("Starting Fastify server...");
 console.log("Environment variables loaded:", {
   PORT: process.env.PORT || "Undefined",
   TENANT_ID: process.env.TENANT_ID || "Undefined",
-  API_AUDIENCE: process.env.API_AUDIENCE || "Undefined",
+    CLIENT_ID: process.env.CLIENT_ID || process.env.API_AUDIENCE || "Undefined",
   CORS_ORIGIN: process.env.CORS_ORIGIN || "Undefined",
 });
 
 const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const TENANT_ID = process.env.TENANT_ID;
-const API_AUDIENCE = process.env.API_AUDIENCE;
+const CLIENT_ID = process.env.CLIENT_ID ?? process.env.API_AUDIENCE;
 const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}/v2.0`;
 const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 
 const server = Fastify({ logger: true });
-
-// Register the rate limiter plugin globally
-server.register(rateLimit, {
-  max: 100, // Maximum number of requests per user per minute
-  timeWindow: "1 minute", // Time window for rate limiting
-  ban: 1, // Ban IPs for 1 minute if they exceed the limit
-});
 
 // Cache the JWKS public keys
 let publicKeys: { [key: string]: string } = {};
@@ -95,7 +87,7 @@ async function validateToken(
 
     // Verify the token
     const verifiedToken = jwt.verify(token, publicKey, {
-      audience: API_AUDIENCE,
+      audience: CLIENT_ID,
       issuer: `${AUTHORITY}`,
     }) as JwtPayload;
 
@@ -112,17 +104,6 @@ async function validateToken(
   }
 }
 
-// CORS setup
-server.register(cors, {
-  origin: (origin, cb) => {
-    if (!origin || origin === CORS_ORIGIN) {
-      cb(null, true);
-    } else {
-      cb(new Error("Not allowed by CORS"), false);
-    }
-  },
-});
-
 // Apply token validation to all requests
 server.addHook("onRequest", validateToken);
 
@@ -131,59 +112,100 @@ server.get("/_health", async () => {
   return { ok: true };
 });
 
-// Route to handle user login data
-server.post(
-  "/login",
-  { preHandler: validateToken }, // Use token validation middleware
-  async (request, reply) => {
-    const { firstName, lastName, email, object_id } = request.body as {
-      firstName: string;
-      lastName: string;
-      email: string;
-      object_id: string;
-    };
-
-    // Log to view the token claims
-    console.log("Decoded token claims:", request.user);
-
-    // Extract Object ID from token claims
-    const tokenClaims = request.user as any;
-    const tokenOid = tokenClaims?.oid;
-
-    // Validate object_id matches the one in token claims
-    if (!tokenOid || tokenOid !== object_id) {
-      reply.status(401).send({ error: "Object ID does not match token claims." });
-      return;
+// Main async bootstrap: fetch Key Vault secret (if configured), import Prisma, register routes that use Prisma, and start.
+async function main() {
+  // If Azure Key Vault is configured and DATABASE_URL is not set, fetch it.
+  const kvName = process.env.AZURE_KEYVAULT_NAME;
+  const kvSecretName = process.env.AZURE_KEYVAULT_SECRET_NAME ?? "DATABASE_URL";
+  if (kvName && !process.env.DATABASE_URL) {
+    try {
+      const credential = new DefaultAzureCredential();
+      const vaultUrl = `https://${kvName}.vault.azure.net`;
+      const client = new SecretClient(vaultUrl, credential);
+      const secret = await client.getSecret(kvSecretName);
+      if (secret && secret.value) {
+        process.env.DATABASE_URL = secret.value;
+        console.log("Loaded DATABASE_URL from Azure Key Vault");
+      }
+    } catch (err) {
+      console.warn("Failed to fetch DATABASE_URL from Azure Key Vault:", err);
     }
-
-    // Add this log to confirm the request body data
-    console.log("Request body:", { firstName, lastName, email, object_id });
-
-    // Query database to find or create the user
-    const user = await prisma.employee.upsert({
-      where: { object_id },
-      update: {},
-      create: {
-        object_id,
-        first_name: firstName,
-        last_name: lastName,
-        email,
-      },
-    });
-
-    // Log the result of the `upsert`
-    console.log("Upsert result:", user);
-
-    // Respond with success message
-    reply.status(200).send({ status: user ? "updated" : "created" });
   }
-);
 
-// Register application routes
-server.register(timesheetRoutes, { prefix: "/api" });
+  // Dynamically import prisma after env is prepared
+  const { default: prisma } = await import("./prismaClient");
 
-// Start the server
-const start = async () => {
+  // Re-enable rate-limit and CORS if available, but keep server resilient if registration fails.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const rateLimit = require("@fastify/rate-limit");
+    await server.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
+    console.log("Registered @fastify/rate-limit");
+  } catch (err) {
+    console.warn("Could not register @fastify/rate-limit (continuing):", err?.message ?? err);
+  }
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fastifyCors = require("@fastify/cors");
+    await server.register(fastifyCors, { origin: CORS_ORIGIN });
+    console.log("Registered @fastify/cors");
+  } catch (err) {
+    console.warn("Could not register @fastify/cors (continuing):", (err as any)?.message ?? err);
+  }
+
+  // Route to handle user login data (moved here so `prisma` is available)
+  server.post(
+    "/login",
+    { preHandler: validateToken }, // Use token validation middleware
+    async (request, reply) => {
+      const { firstName, lastName, email, object_id } = request.body as {
+        firstName: string;
+        lastName: string;
+        email: string;
+        object_id: string;
+      };
+
+      // Log to view the token claims
+      console.log("Decoded token claims:", request.user);
+
+      // Extract Object ID from token claims
+      const tokenClaims = request.user as any;
+      const tokenOid = tokenClaims?.oid;
+
+      // Validate object_id matches the one in token claims
+      if (!tokenOid || tokenOid !== object_id) {
+        reply.status(401).send({ error: "Object ID does not match token claims." });
+        return;
+      }
+
+      // Add this log to confirm the request body data
+      console.log("Request body:", { firstName, lastName, email, object_id });
+
+      // Query database to find or create the user
+      const user = await prisma.employee.upsert({
+        where: { object_id },
+        update: {},
+        create: {
+          object_id,
+          first_name: firstName,
+          last_name: lastName,
+          email,
+        },
+      });
+
+      // Log the result of the `upsert`
+      console.log("Upsert result:", user);
+
+      // Respond with success message
+      reply.status(200).send({ status: user ? "updated" : "created" });
+    }
+  );
+
+  // Register application routes
+  server.register(timesheetRoutes, { prefix: "/api" });
+
+  // Start the server
   try {
     await prisma.$connect();
     await server.listen({ port: PORT, host: "0.0.0.0" });
@@ -192,6 +214,6 @@ const start = async () => {
     server.log.error(err);
     process.exit(1);
   }
-};
+}
 
-start();
+main();
