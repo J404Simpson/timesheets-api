@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = timesheetRoutes;
 async function timesheetRoutes(fastify, opts) {
+    // Placeholder routes (empty implementation to avoid breaking anything)
     fastify.post("/timesheet/demo", async (request, reply) => {
         reply.status(200).send({ message: "Demo route placeholder" });
     });

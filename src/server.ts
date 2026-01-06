@@ -142,7 +142,7 @@ async function main() {
     await server.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
     console.log("Registered @fastify/rate-limit");
   } catch (err) {
-    console.warn("Could not register @fastify/rate-limit (continuing):", err?.message ?? err);
+    console.warn("Could not register @fastify/rate-limit (continuing):", (err as any)?.message ?? err);
   }
 
   try {
