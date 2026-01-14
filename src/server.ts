@@ -64,6 +64,11 @@ async function validateToken(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<void> {
+  // Skip validation for OPTIONS (CORS preflight) requests
+  if (request.method === "OPTIONS") {
+    return;
+  }
+
   const authHeader = request.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     reply.status(401).send({ error: "Missing or invalid Authorization header" });
