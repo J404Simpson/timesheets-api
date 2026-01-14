@@ -47,7 +47,7 @@ jobs:
         run: |
           echo "Creating deployment package..."
           zip -r node-app.zip \
-          ./dist \
+          ./src \
           ./package.json \
           ./package-lock.json \
           ./tsconfig.json \
