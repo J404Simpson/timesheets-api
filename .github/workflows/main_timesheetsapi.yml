@@ -47,12 +47,12 @@ jobs:
         run: |
           echo "Creating deployment package..."
           zip -r node-app.zip \
-          ./src \
+          ./dist \
+          ./node_modules \
           ./package.json \
           ./package-lock.json \
-          ./tsconfig.json \
-          ./startup.sh \
-          ./prisma
+          ./prisma \
+          ./startup.sh
 
       - name: Debug zip content
         run: |

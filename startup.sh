@@ -1,3 +1,4 @@
 #!/bin/bash
 cd /home/site/wwwroot
-npm start
+npx prisma generate
+node dist/server.js
