@@ -43,27 +43,22 @@ jobs:
             exit 1
           fi
 
-      - name: Create deployment zip
+      - name: Prepare deployment package
         run: |
-          echo "Creating deployment package..."
-          zip -r node-app.zip \
-          ./dist \
-          ./node_modules \
-          ./package.json \
-          ./package-lock.json \
-          ./prisma \
-          ./startup.sh
-
-      - name: Debug zip content
-        run: |
-          echo "Listing deployment package content:"
-          unzip -l node-app.zip
+          mkdir deploy
+          cp -R \
+            package.json \
+            package-lock.json \
+            node_modules \
+            dist \
+            prisma \
+            deploy
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: node-app
-          path: node-app.zip
+          path: deploy
 
   deploy:
     runs-on: ubuntu-latest
@@ -79,11 +74,6 @@ jobs:
           name: node-app
           path: .
 
-      - name: Debug zip file
-        run: |
-          echo "Listing deployment package content:"
-          unzip -l node-app.zip
-
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -97,4 +87,4 @@ jobs:
         with:
           app-name: 'TimesheetsAPI'
           slot-name: 'Production'
-          package: node-app.zip
+          package: node-app.zip.
