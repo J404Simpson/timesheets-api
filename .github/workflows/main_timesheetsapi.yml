@@ -50,6 +50,7 @@ jobs:
           ./dist \
           ./package.json \
           ./package-lock.json \
+          ./tsconfig.json \
           ./prisma
 
       - name: Debug zip content
