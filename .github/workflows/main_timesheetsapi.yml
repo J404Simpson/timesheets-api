@@ -24,9 +24,13 @@ jobs:
           cache: 'npm'
 
       - name: Install Dependencies
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db?schema=public
         run: npm ci
 
       - name: Generate Prisma Client
+        env:
+          DATABASE_URL: postgresql://user:pass@localhost:5432/db?schema=public
         run: npx prisma generate
 
       - name: Build the app
