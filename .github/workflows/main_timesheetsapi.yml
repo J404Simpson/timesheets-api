@@ -33,24 +33,14 @@ jobs:
           DATABASE_URL: postgresql://user:pass@localhost:5432/db?schema=public
         run: npx prisma generate
 
-      - name: Build the app
-        run: npm run build
-
-      - name: Validate build output
-        run: |
-          if [ ! -f ./dist/server.js ]; then
-            echo "Error: dist/server.js not found! Exiting..."
-            exit 1
-          fi
-
       - name: Prepare deployment package
         run: |
           mkdir deploy
           cp -R \
             package.json \
             package-lock.json \
-            node_modules \
-            dist \
+            tsconfig.json \
+            src \
             prisma \
             deploy
 
