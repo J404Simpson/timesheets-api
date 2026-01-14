@@ -48,12 +48,9 @@ jobs:
           echo "Creating deployment package..."
           zip -r node-app.zip \
           ./dist \
-          ./src \
-          ./node_modules \
           ./package.json \
           ./package-lock.json \
-          ./prisma/schema.prisma \
-          ./prisma/prisma.config.ts
+          ./prisma
 
       - name: Debug zip content
         run: |
