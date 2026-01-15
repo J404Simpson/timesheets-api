@@ -85,6 +85,10 @@ async function validateToken(
       throw new Error("No matching signing key found for token");
     }
 
+    // Decode token to check claims before verification
+    const decodedToken = jwt.decode(token) as JwtPayload;
+    console.log("Token claims:", { aud: decodedToken.aud, iss: decodedToken.iss, tid: decodedToken.tid });
+
     // Verify the token
     const verifiedToken = jwt.verify(token, publicKey, {
       audience: AUDIENCE,
