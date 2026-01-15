@@ -42,18 +42,28 @@ async function fetchPublicKeys(): Promise<{ [key: string]: string }> {
       });
 
       res.on("end", () => {
-        const jwks = JSON.parse(data);
-        const keys: { [key: string]: string } = {};
+        try {
+          if (!data || data.trim() === "") {
+            throw new Error("Empty response from JWKS endpoint");
+          }
+          const jwks = JSON.parse(data);
+          const keys: { [key: string]: string } = {};
 
-        jwks.keys.forEach((key: any) => {
-          const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
-          keys[key.kid] = pubKey;
-        });
+          jwks.keys.forEach((key: any) => {
+            const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
+            keys[key.kid] = pubKey;
+          });
 
-        publicKeys = keys; // Cache the keys
-        resolve(keys);
+          publicKeys = keys; // Cache the keys
+          resolve(keys);
+        } catch (err) {
+          console.error("Failed to parse JWKS response:", err);
+          console.error("JWKS response data:", data);
+          reject(err);
+        }
       });
     }).on("error", (err) => {
+      console.error("Failed to fetch JWKS:", err);
       reject(err);
     });
   });
