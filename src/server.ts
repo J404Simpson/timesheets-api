@@ -20,7 +20,7 @@ const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const TENANT_ID = process.env.TENANT_ID;
 const CLIENT_ID = process.env.CLIENT_ID ?? process.env.API_AUDIENCE;
-const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}/v2.0`;
+const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
 const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 
