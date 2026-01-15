@@ -2,7 +2,7 @@ import Fastify, { FastifyRequest, FastifyReply } from "fastify";
 import dotenv from "dotenv";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import timesheetRoutes from "./routes/timesheet";
-import https from "https"; // For manually fetching JWKS keys
+import axios from "axios";
 import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 
@@ -33,40 +33,24 @@ let publicKeys: { [key: string]: string } = {};
 async function fetchPublicKeys(): Promise<{ [key: string]: string }> {
   if (Object.keys(publicKeys).length > 0) return publicKeys;
 
-  return new Promise((resolve, reject) => {
-    https.get(JWKS_URI, (res) => {
-      let data = "";
+  try {
+    console.log("Fetching JWKS from:", JWKS_URI);
+    const response = await axios.get(JWKS_URI, { timeout: 10000 });
+    const jwks = response.data;
+    const keys: { [key: string]: string } = {};
 
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
-
-      res.on("end", () => {
-        try {
-          if (!data || data.trim() === "") {
-            throw new Error("Empty response from JWKS endpoint");
-          }
-          const jwks = JSON.parse(data);
-          const keys: { [key: string]: string } = {};
-
-          jwks.keys.forEach((key: any) => {
-            const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
-            keys[key.kid] = pubKey;
-          });
-
-          publicKeys = keys; // Cache the keys
-          resolve(keys);
-        } catch (err) {
-          console.error("Failed to parse JWKS response:", err);
-          console.error("JWKS response data:", data);
-          reject(err);
-        }
-      });
-    }).on("error", (err) => {
-      console.error("Failed to fetch JWKS:", err);
-      reject(err);
+    jwks.keys.forEach((key: any) => {
+      const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
+      keys[key.kid] = pubKey;
     });
-  });
+
+    publicKeys = keys; // Cache the keys
+    console.log(`Cached ${Object.keys(keys).length} public keys from JWKS`);
+    return keys;
+  } catch (err) {
+    console.error("Failed to fetch JWKS:", err);
+    throw err;
+  }
 }
 
 // Token validation middleware
