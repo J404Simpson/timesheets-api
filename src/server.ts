@@ -89,10 +89,14 @@ async function validateToken(
     const decodedToken = jwt.decode(token) as JwtPayload;
     console.log("Token claims:", { aud: decodedToken.aud, iss: decodedToken.iss, tid: decodedToken.tid });
 
-    // Verify the token
+    // Verify the token - accept both v1.0 and v2.0 issuers
+    const validIssuers = [
+      `https://sts.windows.net/${TENANT_ID}/`,
+      `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
+    ];
     const verifiedToken = jwt.verify(token, publicKey, {
       audience: AUDIENCE,
-      issuer: `${AUTHORITY}/v2.0`,
+      issuer: validIssuers,
     }) as JwtPayload;
 
     // Check if the token belongs to your Azure AD Tenant
