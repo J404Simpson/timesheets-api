@@ -90,7 +90,7 @@ async function validateToken(
     console.log("Token claims:", { aud: decodedToken.aud, iss: decodedToken.iss, tid: decodedToken.tid });
 
     // Verify the token - accept both v1.0 and v2.0 issuers
-    const validIssuers = [
+    const validIssuers: [string, string] = [
       `https://sts.windows.net/${TENANT_ID}/`,
       `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
     ];
