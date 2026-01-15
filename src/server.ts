@@ -87,7 +87,7 @@ async function validateToken(
     // Verify the token
     const verifiedToken = jwt.verify(token, publicKey, {
       audience: CLIENT_ID,
-      issuer: `${AUTHORITY}`,
+      issuer: `${AUTHORITY}/v2.0`,
     }) as JwtPayload;
 
     // Check if the token belongs to your Azure AD Tenant
@@ -99,6 +99,7 @@ async function validateToken(
     // Attach user details to request
     request.user = verifiedToken; // TypeScript needs a custom declaration for this
   } catch (err) {
+    console.error("Token validation error:", err instanceof Error ? err.message : err);
     reply.status(401).send({ error: "Invalid or expired token" });
   }
 }
