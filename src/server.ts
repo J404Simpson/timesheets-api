@@ -8,14 +8,6 @@ import { SecretClient } from "@azure/keyvault-secrets";
 
 dotenv.config();
 
-console.log("Starting Fastify server...");
-console.log("Environment variables loaded:", {
-  PORT: process.env.PORT || "Undefined",
-  TENANT_ID: process.env.TENANT_ID || "Undefined",
-    CLIENT_ID: process.env.CLIENT_ID || process.env.API_AUDIENCE || "Undefined",
-  CORS_ORIGIN: process.env.CORS_ORIGIN || "Undefined",
-});
-
 const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const TENANT_ID = process.env.TENANT_ID;
@@ -35,7 +27,6 @@ async function fetchPublicKeys(): Promise<{ [key: string]: string }> {
   if (Object.keys(publicKeys).length > 0) return publicKeys;
 
   try {
-    console.log("Fetching JWKS from:", JWKS_URI);
     const response = await axios.get(JWKS_URI, { timeout: 10000 });
     const jwks = response.data;
     const keys: { [key: string]: string } = {};
@@ -46,10 +37,8 @@ async function fetchPublicKeys(): Promise<{ [key: string]: string }> {
     });
 
     publicKeys = keys; // Cache the keys
-    console.log(`Cached ${Object.keys(keys).length} public keys from JWKS`);
     return keys;
   } catch (err) {
-    console.error("Failed to fetch JWKS:", err);
     throw err;
   }
 }
@@ -87,7 +76,6 @@ async function validateToken(
 
     // Decode token to check claims before verification
     const decodedToken = jwt.decode(token) as JwtPayload;
-    console.log("Token claims:", { aud: decodedToken.aud, iss: decodedToken.iss, tid: decodedToken.tid });
 
     // Verify the token - accept both v1.0 and v2.0 issuers
     const validIssuers: [string, string] = [
@@ -108,7 +96,6 @@ async function validateToken(
     // Attach user details to request
     request.user = verifiedToken; // TypeScript needs a custom declaration for this
   } catch (err) {
-    console.error("Token validation error:", err instanceof Error ? err.message : err);
     reply.status(401).send({ error: "Invalid or expired token" });
   }
 }
@@ -134,10 +121,9 @@ async function main() {
       const secret = await client.getSecret(kvSecretName);
       if (secret && secret.value) {
         process.env.DATABASE_URL = secret.value;
-        console.log("Loaded DATABASE_URL from Azure Key Vault");
       }
     } catch (err) {
-      console.warn("Failed to fetch DATABASE_URL from Azure Key Vault:", err);
+      // Failed to fetch from Key Vault, continue with env var
     }
   }
 
@@ -149,18 +135,16 @@ async function main() {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const rateLimit = require("@fastify/rate-limit");
     await server.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
-    console.log("Registered @fastify/rate-limit");
   } catch (err) {
-    console.warn("Could not register @fastify/rate-limit (continuing):", (err as any)?.message ?? err);
+    // Could not register rate-limit, continuing without it
   }
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fastifyCors = require("@fastify/cors");
     await server.register(fastifyCors, { origin: CORS_ORIGIN });
-    console.log("Registered @fastify/cors");
   } catch (err) {
-    console.warn("Could not register @fastify/cors (continuing):", (err as any)?.message ?? err);
+    // Could not register CORS, continuing without it
   }
 
   // Route to handle user login data (moved here so `prisma` is available)
@@ -175,9 +159,6 @@ async function main() {
         object_id: string;
       };
 
-      // Log to view the token claims
-      console.log("Decoded token claims:", request.user);
-
       // Extract Object ID from token claims
       const tokenClaims = request.user as any;
       const tokenOid = tokenClaims?.oid;
@@ -187,9 +168,6 @@ async function main() {
         reply.status(401).send({ error: "Object ID does not match token claims." });
         return;
       }
-
-      // Add this log to confirm the request body data
-      console.log("Request body:", { firstName, lastName, email, object_id });
 
       // Query database to find or create the user
       const user = await prisma.employee.upsert({
@@ -202,9 +180,6 @@ async function main() {
           email,
         },
       });
-
-      // Log the result of the `upsert`
-      console.log("Upsert result:", user);
 
       // Respond with success message
       reply.status(200).send({ status: user ? "updated" : "created" });
