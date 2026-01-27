@@ -8,109 +8,110 @@ datasource db {
 }
 
 model employee {
-  id         Int       @id(map: "User_pkey") @default(autoincrement())
-  object_id  String    @unique(map: "User_object_id_key") @db.VarChar(255)
-  email      String    @unique(map: "User_email_key") @db.VarChar(255)
-  first_name String?   @db.VarChar(100)
-  last_name  String?   @db.VarChar(100)
-  tenant_id  String?   @db.VarChar(255)
-  created_at DateTime? @default(now()) @db.Timestamp(6)
-  updated_at DateTime? @default(now()) @db.Timestamp(6)
-  admin      Boolean?  @default(false)
+  id            Int         @id(map: "User_pkey") @default(autoincrement())
+  object_id     String      @unique(map: "User_object_id_key") @db.VarChar(255)
+  email         String      @unique(map: "User_email_key") @db.VarChar(255)
+  first_name    String?     @db.VarChar(100)
+  last_name     String?     @db.VarChar(100)
+  tenant_id     String?     @db.VarChar(255)
+  created_at    DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at    DateTime?   @default(now()) @db.Timestamp(6)
+  admin         Boolean?    @default(false)
   department_id Int?
-  entries    entry[]
-  department department? @relation(fields: [department_id], references: [id], onDelete: SetNull, map: "fk_employee_department")
+  department    department? @relation(fields: [department_id], references: [id], map: "fk_employee_department")
+  entries       entry[]
 
   @@map("employee")
 }
 
 model entry {
-  id          Int       @id(map: "timesheetentry_pkey") @default(autoincrement())
-  employee_id Int
-  project_id  Int?
-  task_id     Int?
-  date        DateTime  @db.Date
-  type        Boolean
-  start_time  DateTime  @db.Time(6)
-  end_time    DateTime  @db.Time(6)
-  hours       Decimal   @db.Decimal(5, 2)
-  notes       String?
-  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  id               Int            @id(map: "timesheetentry_pkey") @default(autoincrement())
+  employee_id      Int
+  project_id       Int?
+  task_id          Int?
+  date             DateTime       @db.Date
+  type             Boolean
+  start_time       DateTime       @db.Time(6)
+  end_time         DateTime       @db.Time(6)
+  hours            Decimal        @db.Decimal(5, 2)
+  notes            String?
+  created_at       DateTime?      @default(now()) @db.Timestamp(6)
   project_phase_id Int?
-  employee    employee  @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  project_phase project_phase? @relation(fields: [project_phase_id], references: [id], onDelete: SetNull, onUpdate: NoAction, map: "fk_entry_project_phase")
-  task        task?     @relation(fields: [task_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_entry_task")
-  project     project?  @relation(fields: [project_id], references: [id], onUpdate: NoAction, map: "timesheetentry_project_id_fkey")
+  employee         employee       @relation(fields: [employee_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  project_phase    project_phase? @relation(fields: [project_phase_id], references: [id], onUpdate: NoAction, map: "fk_entry_project_phase")
+  task             task?          @relation(fields: [task_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_entry_task")
+  project          project?       @relation(fields: [project_id], references: [id], onUpdate: NoAction, map: "timesheetentry_project_id_fkey")
 
   @@map("entry")
 }
 
 model phase {
-  id          Int       @id @default(autoincrement())
-  name        String    @db.VarChar(255)
-  description String?
-  enabled     Boolean   @default(true)
-  created_at  DateTime? @default(now()) @db.Timestamp(6)
+  id             Int             @id @default(autoincrement())
+  name           String          @db.VarChar(255)
+  description    String?
+  created_at     DateTime?       @default(now()) @db.Timestamp(6)
+  enabled        Boolean         @default(true)
+  phase_tasks    phase_task[]
   project_phases project_phase[]
-  phase_tasks phase_task[]
 
   @@map("phase")
 }
 
 model project {
-  id          Int       @id @default(autoincrement())
-  name        String    @db.VarChar(255)
-  description String?
-  created_at  DateTime? @default(now()) @db.Timestamp(6)
-  entries     entry[]
+  id             Int             @id @default(autoincrement())
+  name           String          @db.VarChar(255)
+  description    String?
+  active         Boolean         @default(true)
+  created_at     DateTime?       @default(now()) @db.Timestamp(6)
+  entries        entry[]
   project_phases project_phase[]
 
   @@map("project")
 }
 
 model task {
-  id         Int       @id @default(autoincrement())
-  name       String    @db.VarChar(255)
-  enabled    Boolean   @default(true)
-  created_at DateTime? @default(now()) @db.Timestamp(6)
+  id            Int          @id @default(autoincrement())
+  name          String       @db.VarChar(255)
+  created_at    DateTime?    @default(now()) @db.Timestamp(6)
+  enabled       Boolean      @default(true)
   department_id Int?
-  entries    entry[]
-  department department? @relation(fields: [department_id], references: [id], onDelete: SetNull, map: "fk_task_department")
-  phase_tasks phase_task[]
+  entries       entry[]
+  phase_tasks   phase_task[]
+  department    department?  @relation(fields: [department_id], references: [id], map: "fk_task_department")
 
   @@map("task")
 }
 
 model department {
-  id         Int        @id @default(autoincrement())
-  name       String     @unique @db.VarChar(255)
-  employees  employee[]
-  tasks      task[]
+  id        Int        @id @default(autoincrement())
+  name      String     @unique @db.VarChar(255)
+  employees employee[]
+  tasks     task[]
 
   @@map("department")
 }
 
 model project_phase {
-  id          Int       @id @default(autoincrement())
-  project_id  Int
-  phase_id    Int
-  created_at  DateTime? @default(now()) @db.Timestamp(6)
-  entries     entry[]
-  project     project   @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_phase_project")
-  phase       phase     @relation(fields: [phase_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_phase_phase")
+  id         Int       @id @default(autoincrement())
+  project_id Int
+  phase_id   Int
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  entries    entry[]
+  phase      phase     @relation(fields: [phase_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_phase_phase")
+  project    project   @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_project_phase_project")
 
-  @@unique([project_id, phase_id], map: "project_phase_project_id_phase_id_key")
+  @@unique([project_id, phase_id])
   @@map("project_phase")
 }
 
 model phase_task {
-  id          Int       @id @default(autoincrement())
-  phase_id    Int
-  task_id     Int
-  created_at  DateTime? @default(now()) @db.Timestamp(6)
-  phase       phase     @relation(fields: [phase_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_phase_task_phase")
-  task        task      @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_phase_task_task")
+  id         Int       @id @default(autoincrement())
+  phase_id   Int
+  task_id    Int
+  created_at DateTime? @default(now()) @db.Timestamp(6)
+  phase      phase     @relation(fields: [phase_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_phase_task_phase")
+  task       task      @relation(fields: [task_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_phase_task_task")
 
-  @@unique([phase_id, task_id], map: "phase_task_phase_id_task_id_key")
+  @@unique([phase_id, task_id])
   @@map("phase_task")
 }
