@@ -58,35 +58,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   );
 }
-import { FastifyInstance, FastifyPluginOptions } from "fastify";
-import prisma from "../prismaClient";
-
-export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
-  // Placeholder routes (empty implementation to avoid breaking anything)
-  fastify.post("/timesheet/demo", async (request, reply) => {
-    reply.status(200).send({ message: "Demo route placeholder" });
-  });
-
-  // GET /projects - return all active projects
-  fastify.get("/projects", async (request, reply) => {
-    try {
-      const projects = await prisma.project.findMany({
-        where: { active: true },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          created_at: true,
-        },
-        orderBy: { name: "asc" },
-      });
-      reply.status(200).send({ projects });
-    } catch (err) {
-      fastify.log.error(err);
-      reply.status(500).send({ error: "Failed to fetch projects" });
-    }
-  });
-}
 
 // type EntryPayload = {
 //   entry: {
