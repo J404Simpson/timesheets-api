@@ -2,6 +2,37 @@ import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } f
 import prisma from "../prismaClient";
 
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
+    // GET /phases/:phaseId/tasks - return tasks for a phase and the employee's department (inferred from JWT)
+    fastify.get("/phases/:phaseId/tasks", async (request, reply) => {
+      const phaseId = Number((request.params as any).phaseId);
+      // Get object_id from JWT (set by validateToken middleware)
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!phaseId || !object_id) {
+        return reply.status(400).send({ error: "phaseId and authenticated user required" });
+      }
+      try {
+        // Get the employee's department_id by object_id
+        const employee = await prisma.employee.findUnique({ where: { object_id } });
+        if (!employee || !employee.department_id) {
+          return reply.status(400).send({ error: "Employee or department not found" });
+        }
+        const departmentId = employee.department_id;
+        // Use a raw query to get tasks for the phase and department
+        const tasks = await prisma.$queryRaw`
+          SELECT t.id, t.name, t.enabled
+          FROM task t
+          INNER JOIN phase_task pt ON pt.task_id = t.id
+          INNER JOIN department_task dt ON dt.task_id = t.id
+          WHERE pt.phase_id = ${phaseId} AND dt.department_id = ${departmentId}
+          ORDER BY t.name ASC
+        `;
+        reply.status(200).send({ tasks });
+      } catch (err) {
+        fastify.log.error(err);
+        reply.status(500).send({ error: "Failed to fetch tasks" });
+      }
+    });
   // POST /employees - create a new employee with department
   fastify.post("/employees", async (request, reply) => {
     const { firstName, lastName, email, object_id, department_id } = request.body as {
@@ -97,7 +128,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           include: { phase: true },
           orderBy: { id: "asc" },
         });
-        const phases = projectPhases.map((pp) => ({
+        const phases = projectPhases.map((pp: any) => ({
           id: pp.phase.id,
           name: pp.phase.name,
           description: pp.phase.description,
