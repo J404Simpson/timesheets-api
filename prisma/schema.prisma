@@ -74,10 +74,9 @@ model task {
   name          String       @db.VarChar(255)
   created_at    DateTime?    @default(now()) @db.Timestamp(6)
   enabled       Boolean      @default(true)
-  department_id Int?
   entries       entry[]
   phase_tasks   phase_task[]
-  department    department?  @relation(fields: [department_id], references: [id], map: "fk_task_department")
+  departments   department[] @relation("DepartmentTasks", through: department_task)
 
   @@map("task")
 }
@@ -86,9 +85,19 @@ model department {
   id        Int        @id @default(autoincrement())
   name      String     @unique @db.VarChar(255)
   employees employee[]
-  tasks     task[]
+  tasks     task[]     @relation("DepartmentTasks", through: department_task)
 
   @@map("department")
+}
+
+model department_task {
+  department_id Int
+  task_id      Int
+  department   department @relation(fields: [department_id], references: [id])
+  task         task       @relation(fields: [task_id], references: [id])
+
+  @@id([department_id, task_id])
+  @@map("department_task")
 }
 
 model project_phase {

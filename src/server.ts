@@ -169,20 +169,15 @@ async function main() {
         return;
       }
 
-      // Query database to find or create the user
-      const user = await prisma.employee.upsert({
-        where: { object_id },
-        update: {},
-        create: {
-          object_id,
-          first_name: firstName,
-          last_name: lastName,
-          email,
-        },
-      });
-
-      // Respond with success message
-      reply.status(200).send({ status: user ? "updated" : "created" });
+      // Check if employee exists
+      const existingEmployee = await prisma.employee.findUnique({ where: { object_id } });
+      if (!existingEmployee) {
+        // Employee does not exist, require department selection
+        reply.status(200).send({ status: "department_required" });
+        return;
+      }
+      // Employee exists, proceed as before
+      reply.status(200).send({ status: "updated" });
     }
   );
 

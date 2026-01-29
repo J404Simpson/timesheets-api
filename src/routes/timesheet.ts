@@ -2,9 +2,62 @@ import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } f
 import prisma from "../prismaClient";
 
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
+  // POST /employees - create a new employee with department
+  fastify.post("/employees", async (request, reply) => {
+    const { firstName, lastName, email, object_id, department_id } = request.body as {
+      firstName: string;
+      lastName: string;
+      email: string;
+      object_id: string;
+      department_id: number;
+    };
+    if (!firstName || !lastName || !email || !object_id || !department_id) {
+      reply.status(400).send({ error: "Missing required fields" });
+      return;
+    }
+    try {
+      // Check if employee already exists
+      const existingEmployee = await prisma.employee.findUnique({ where: { object_id } });
+      if (existingEmployee) {
+        reply.status(409).send({ error: "Employee already exists" });
+        return;
+      }
+      const employee = await prisma.employee.create({
+        data: {
+          object_id,
+          first_name: firstName,
+          last_name: lastName,
+          email,
+          department_id,
+        },
+      });
+      reply.status(201).send({ employee });
+    } catch (err) {
+      fastify.log.error(err);
+      reply.status(500).send({ error: "Failed to create employee" });
+    }
+  });
+
   // Placeholder routes (empty implementation to avoid breaking anything)
   fastify.post("/timesheet/demo", async (request, reply) => {
     reply.status(200).send({ message: "Demo route placeholder" });
+  });
+
+  // GET /departments - return all departments
+  fastify.get("/departments", async (request, reply) => {
+    try {
+      const departments = await prisma.department.findMany({
+        select: {
+          id: true,
+          name: true,
+        },
+        orderBy: { name: "asc" },
+      });
+      reply.status(200).send({ departments });
+    } catch (err) {
+      fastify.log.error(err);
+      reply.status(500).send({ error: "Failed to fetch departments" });
+    }
   });
 
   // GET /projects - return all active projects
