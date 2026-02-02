@@ -2,6 +2,57 @@ import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } f
 import prisma from "../prismaClient";
 
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
+  // GET /entries/week - return entries for the current week for the authenticated user
+  fastify.get("/entries/week", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+    try {
+      // Get employee by object_id
+      const employee = await prisma.employee.findUnique({ where: { object_id } });
+      if (!employee) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+      // Calculate start and end of current week (Monday to Sunday)
+      const now = new Date();
+      const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Adjust if Sunday
+      const monday = new Date(now);
+      monday.setDate(now.getDate() + diffToMonday);
+      monday.setHours(0, 0, 0, 0);
+      const sunday = new Date(monday);
+      sunday.setDate(monday.getDate() + 6);
+      sunday.setHours(23, 59, 59, 999);
+      // Fetch entries for the week
+      const entries = await prisma.entry.findMany({
+        where: {
+          employee_id: employee.id,
+          date: {
+            gte: monday,
+            lte: sunday,
+          },
+        },
+        include: {
+          project: { select: { id: true, name: true } },
+          task: { select: { id: true, name: true } },
+          project_phase: {
+            select: {
+              id: true,
+              phase: { select: { id: true, name: true } },
+            },
+          },
+        },
+        orderBy: [{ date: "asc" }, { start_time: "asc" }],
+      });
+      reply.status(200).send({ entries });
+    } catch (err) {
+      fastify.log.error(err);
+      reply.status(500).send({ error: "Failed to fetch entries" });
+    }
+  });
+
     // GET /phases/:phaseId/tasks - return tasks for a phase and the employee's department (inferred from JWT)
     fastify.get("/phases/:phaseId/tasks", async (request, reply) => {
       const phaseId = Number((request.params as any).phaseId);
