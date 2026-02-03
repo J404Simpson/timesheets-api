@@ -170,7 +170,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       reply: FastifyReply
     ) => {
       const projectId = Number(request.params.id);
-      if (!projectId) {
+      if (isNaN(projectId) || projectId == null) {
         return reply.status(400).send({ error: "Project id required" });
       }
       try {
