@@ -129,6 +129,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.get("/departments", async (request, reply) => {
     try {
       const departments = await prisma.department.findMany({
+        where: { id: { not: 0 } },
         select: {
           id: true,
           name: true,
