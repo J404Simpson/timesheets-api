@@ -193,6 +193,111 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       }
     }
   );
+
+  // POST /entries - create a new timesheet entry for the authenticated user
+  fastify.post("/entries", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    const {
+      projectId,
+      phaseId,
+      taskId,
+      date,
+      startTime,
+      endTime,
+      hours,
+      notes,
+      type,
+    } = request.body as {
+      projectId: number;
+      phaseId?: number | null;
+      taskId?: number | null;
+      date: string;
+      startTime: string;
+      endTime: string;
+      hours?: number;
+      notes?: string;
+      type?: boolean;
+    };
+
+    if (!projectId || !date || !startTime || !endTime) {
+      return reply.status(400).send({ error: "projectId, date, startTime and endTime are required" });
+    }
+
+    try {
+      const employee = await prisma.employee.findUnique({ where: { object_id } });
+      if (!employee) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      const [startH, startM] = startTime.split(":").map((v) => Number(v));
+      const [endH, endM] = endTime.split(":").map((v) => Number(v));
+      if (
+        Number.isNaN(startH) ||
+        Number.isNaN(startM) ||
+        Number.isNaN(endH) ||
+        Number.isNaN(endM)
+      ) {
+        return reply.status(400).send({ error: "Invalid startTime or endTime format" });
+      }
+
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+      if (endMinutes <= startMinutes) {
+        return reply.status(400).send({ error: "endTime must be after startTime" });
+      }
+
+      const entryDate = new Date(`${date}T00:00:00.000Z`);
+      if (Number.isNaN(entryDate.getTime())) {
+        return reply.status(400).send({ error: "Invalid date format" });
+      }
+
+      const startDateTime = new Date(Date.UTC(1970, 0, 1, startH, startM, 0, 0));
+      const endDateTime = new Date(Date.UTC(1970, 0, 1, endH, endM, 0, 0));
+      const computedHours = Number((((endMinutes - startMinutes) / 60)).toFixed(2));
+
+      let projectPhaseId: number | null = null;
+      if (phaseId != null) {
+        const projectPhase = await prisma.project_phase.findFirst({
+          where: {
+            project_id: Number(projectId),
+            phase_id: Number(phaseId),
+          },
+          select: { id: true },
+        });
+
+        if (!projectPhase) {
+          return reply.status(400).send({ error: "Selected phase is not linked to project" });
+        }
+
+        projectPhaseId = projectPhase.id;
+      }
+
+      const created = await prisma.entry.create({
+        data: {
+          employee_id: employee.id,
+          project_id: Number(projectId),
+          task_id: taskId != null ? Number(taskId) : null,
+          project_phase_id: projectPhaseId,
+          date: entryDate,
+          start_time: startDateTime,
+          end_time: endDateTime,
+          hours: hours != null ? Number(hours) : computedHours,
+          notes: notes ?? null,
+          type: typeof type === "boolean" ? type : false,
+        },
+      });
+
+      return reply.status(201).send({ entry: created });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to create entry" });
+    }
+  });
 }
 
 // type EntryPayload = {
