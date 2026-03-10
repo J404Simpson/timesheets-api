@@ -1,10 +1,190 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = timesheetRoutes;
+const prismaClient_1 = __importDefault(require("../prismaClient"));
 async function timesheetRoutes(fastify, opts) {
+    // GET /entries/week - return entries for the current week for the authenticated user
+    fastify.get("/entries/week", async (request, reply) => {
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            // Get employee by object_id
+            const employee = await prismaClient_1.default.employee.findUnique({ where: { object_id } });
+            if (!employee) {
+                return reply.status(404).send({ error: "Employee not found" });
+            }
+            // Calculate start and end of current week (Monday to Sunday)
+            const now = new Date();
+            const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+            const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Adjust if Sunday
+            const monday = new Date(now);
+            monday.setDate(now.getDate() + diffToMonday);
+            monday.setHours(0, 0, 0, 0);
+            const sunday = new Date(monday);
+            sunday.setDate(monday.getDate() + 6);
+            sunday.setHours(23, 59, 59, 999);
+            // Fetch entries for the week
+            const entries = await prismaClient_1.default.entry.findMany({
+                where: {
+                    employee_id: employee.id,
+                    date: {
+                        gte: monday,
+                        lte: sunday,
+                    },
+                },
+                include: {
+                    project: { select: { id: true, name: true } },
+                    task: { select: { id: true, name: true } },
+                    project_phase: {
+                        select: {
+                            id: true,
+                            phase: { select: { id: true, name: true } },
+                        },
+                    },
+                },
+                orderBy: [{ date: "asc" }, { start_time: "asc" }],
+            });
+            reply.status(200).send({ entries });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to fetch entries" });
+        }
+    });
+    // GET /phases/:phaseId/tasks - return tasks for a phase and the employee's department (inferred from JWT)
+    fastify.get("/phases/:phaseId/tasks", async (request, reply) => {
+        const phaseId = Number(request.params.phaseId);
+        // Get object_id from JWT (set by validateToken middleware)
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!phaseId || !object_id) {
+            return reply.status(400).send({ error: "phaseId and authenticated user required" });
+        }
+        try {
+            // Get the employee's department_id by object_id
+            const employee = await prismaClient_1.default.employee.findUnique({ where: { object_id } });
+            if (!employee || !employee.department_id) {
+                return reply.status(400).send({ error: "Employee or department not found" });
+            }
+            const departmentId = employee.department_id;
+            // Use a raw query to get tasks for the phase and department
+            const tasks = await prismaClient_1.default.$queryRaw `
+          SELECT t.id, t.name, t.enabled
+          FROM task t
+          INNER JOIN phase_task pt ON pt.task_id = t.id
+          INNER JOIN department_task dt ON dt.task_id = t.id
+          WHERE pt.phase_id = ${phaseId} AND dt.department_id = ${departmentId}
+          ORDER BY t.name ASC
+        `;
+            reply.status(200).send({ tasks });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to fetch tasks" });
+        }
+    });
+    // POST /employees - create a new employee with department
+    fastify.post("/employees", async (request, reply) => {
+        const { firstName, lastName, email, object_id, department_id } = request.body;
+        if (!firstName || !lastName || !email || !object_id || !department_id) {
+            reply.status(400).send({ error: "Missing required fields" });
+            return;
+        }
+        try {
+            // Check if employee already exists
+            const existingEmployee = await prismaClient_1.default.employee.findUnique({ where: { object_id } });
+            if (existingEmployee) {
+                reply.status(409).send({ error: "Employee already exists" });
+                return;
+            }
+            const employee = await prismaClient_1.default.employee.create({
+                data: {
+                    object_id,
+                    first_name: firstName,
+                    last_name: lastName,
+                    email,
+                    department_id,
+                },
+            });
+            reply.status(201).send({ employee });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to create employee" });
+        }
+    });
     // Placeholder routes (empty implementation to avoid breaking anything)
     fastify.post("/timesheet/demo", async (request, reply) => {
         reply.status(200).send({ message: "Demo route placeholder" });
+    });
+    // GET /departments - return all departments
+    fastify.get("/departments", async (request, reply) => {
+        try {
+            const departments = await prismaClient_1.default.department.findMany({
+                where: { id: { not: 0 } },
+                select: {
+                    id: true,
+                    name: true,
+                },
+                orderBy: { name: "asc" },
+            });
+            reply.status(200).send({ departments });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to fetch departments" });
+        }
+    });
+    // GET /projects - return all active projects
+    fastify.get("/projects", async (request, reply) => {
+        try {
+            const projects = await prismaClient_1.default.project.findMany({
+                where: { active: true },
+                select: {
+                    id: true,
+                    name: true,
+                    description: true,
+                    created_at: true,
+                },
+                orderBy: { name: "asc" },
+            });
+            reply.status(200).send({ projects });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to fetch projects" });
+        }
+    });
+    // GET /projects/:id/phases - return all phases for a given project
+    fastify.get("/projects/:id/phases", async (request, reply) => {
+        const projectId = Number(request.params.id);
+        if (isNaN(projectId) || projectId == null) {
+            return reply.status(400).send({ error: "Project id required" });
+        }
+        try {
+            const projectPhases = await prismaClient_1.default.project_phase.findMany({
+                where: { project_id: projectId },
+                include: { phase: true },
+                orderBy: { id: "asc" },
+            });
+            const phases = projectPhases.map((pp) => ({
+                id: pp.phase.id,
+                name: pp.phase.name,
+                description: pp.phase.description,
+                enabled: pp.phase.enabled,
+            }));
+            reply.status(200).send({ phases });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            reply.status(500).send({ error: "Failed to fetch phases" });
+        }
     });
 }
 // type EntryPayload = {

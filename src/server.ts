@@ -5,6 +5,7 @@ import timesheetRoutes from "./routes/timesheet";
 import axios from "axios";
 import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
+import { startBambooLeaveScheduler } from "./services/bamboohrSync";
 
 dotenv.config();
 
@@ -183,6 +184,11 @@ async function main() {
 
   // Register application routes
   server.register(timesheetRoutes, { prefix: "/api" });
+
+  const stopBambooScheduler = startBambooLeaveScheduler(prisma, server.log);
+  server.addHook("onClose", async () => {
+    stopBambooScheduler();
+  });
 
   // Start the server
   try {

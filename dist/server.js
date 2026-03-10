@@ -40,22 +40,17 @@ const fastify_1 = __importDefault(require("fastify"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const timesheet_1 = __importDefault(require("./routes/timesheet"));
-const https_1 = __importDefault(require("https")); // For manually fetching JWKS keys
+const axios_1 = __importDefault(require("axios"));
 const identity_1 = require("@azure/identity");
 const keyvault_secrets_1 = require("@azure/keyvault-secrets");
+const bamboohrSync_1 = require("./services/bamboohrSync");
 dotenv_1.default.config();
-console.log("Starting Fastify server...");
-console.log("Environment variables loaded:", {
-    PORT: process.env.PORT || "Undefined",
-    TENANT_ID: process.env.TENANT_ID || "Undefined",
-    CLIENT_ID: process.env.CLIENT_ID || process.env.API_AUDIENCE || "Undefined",
-    CORS_ORIGIN: process.env.CORS_ORIGIN || "Undefined",
-});
 const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
 const TENANT_ID = process.env.TENANT_ID;
 const CLIENT_ID = process.env.CLIENT_ID ?? process.env.API_AUDIENCE;
-const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}/v2.0`;
+const AUDIENCE = `api://${CLIENT_ID}`;
+const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
 const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 const server = (0, fastify_1.default)({ logger: true });
@@ -65,29 +60,27 @@ let publicKeys = {};
 async function fetchPublicKeys() {
     if (Object.keys(publicKeys).length > 0)
         return publicKeys;
-    return new Promise((resolve, reject) => {
-        https_1.default.get(JWKS_URI, (res) => {
-            let data = "";
-            res.on("data", (chunk) => {
-                data += chunk;
-            });
-            res.on("end", () => {
-                const jwks = JSON.parse(data);
-                const keys = {};
-                jwks.keys.forEach((key) => {
-                    const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
-                    keys[key.kid] = pubKey;
-                });
-                publicKeys = keys; // Cache the keys
-                resolve(keys);
-            });
-        }).on("error", (err) => {
-            reject(err);
+    try {
+        const response = await axios_1.default.get(JWKS_URI, { timeout: 10000 });
+        const jwks = response.data;
+        const keys = {};
+        jwks.keys.forEach((key) => {
+            const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
+            keys[key.kid] = pubKey;
         });
-    });
+        publicKeys = keys; // Cache the keys
+        return keys;
+    }
+    catch (err) {
+        throw err;
+    }
 }
 // Token validation middleware
 async function validateToken(request, reply) {
+    // Skip validation for OPTIONS (CORS preflight) requests
+    if (request.method === "OPTIONS") {
+        return;
+    }
     const authHeader = request.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
         reply.status(401).send({ error: "Missing or invalid Authorization header" });
@@ -106,10 +99,16 @@ async function validateToken(request, reply) {
         if (!publicKey) {
             throw new Error("No matching signing key found for token");
         }
-        // Verify the token
+        // Decode token to check claims before verification
+        const decodedToken = jsonwebtoken_1.default.decode(token);
+        // Verify the token - accept both v1.0 and v2.0 issuers
+        const validIssuers = [
+            `https://sts.windows.net/${TENANT_ID}/`,
+            `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
+        ];
         const verifiedToken = jsonwebtoken_1.default.verify(token, publicKey, {
-            audience: CLIENT_ID,
-            issuer: `${AUTHORITY}`,
+            audience: AUDIENCE,
+            issuer: validIssuers,
         });
         // Check if the token belongs to your Azure AD Tenant
         if (verifiedToken.tid !== TENANT_ID) {
@@ -142,11 +141,10 @@ async function main() {
             const secret = await client.getSecret(kvSecretName);
             if (secret && secret.value) {
                 process.env.DATABASE_URL = secret.value;
-                console.log("Loaded DATABASE_URL from Azure Key Vault");
             }
         }
         catch (err) {
-            console.warn("Failed to fetch DATABASE_URL from Azure Key Vault:", err);
+            // Failed to fetch from Key Vault, continue with env var
         }
     }
     // Dynamically import prisma after env is prepared
@@ -156,26 +154,22 @@ async function main() {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const rateLimit = require("@fastify/rate-limit");
         await server.register(rateLimit, { max: 1000, timeWindow: "1 minute" });
-        console.log("Registered @fastify/rate-limit");
     }
     catch (err) {
-        console.warn("Could not register @fastify/rate-limit (continuing):", err?.message ?? err);
+        // Could not register rate-limit, continuing without it
     }
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const fastifyCors = require("@fastify/cors");
         await server.register(fastifyCors, { origin: CORS_ORIGIN });
-        console.log("Registered @fastify/cors");
     }
     catch (err) {
-        console.warn("Could not register @fastify/cors (continuing):", err?.message ?? err);
+        // Could not register CORS, continuing without it
     }
     // Route to handle user login data (moved here so `prisma` is available)
     server.post("/login", { preHandler: validateToken }, // Use token validation middleware
     async (request, reply) => {
         const { firstName, lastName, email, object_id } = request.body;
-        // Log to view the token claims
-        console.log("Decoded token claims:", request.user);
         // Extract Object ID from token claims
         const tokenClaims = request.user;
         const tokenOid = tokenClaims?.oid;
@@ -184,26 +178,22 @@ async function main() {
             reply.status(401).send({ error: "Object ID does not match token claims." });
             return;
         }
-        // Add this log to confirm the request body data
-        console.log("Request body:", { firstName, lastName, email, object_id });
-        // Query database to find or create the user
-        const user = await prisma.employee.upsert({
-            where: { object_id },
-            update: {},
-            create: {
-                object_id,
-                first_name: firstName,
-                last_name: lastName,
-                email,
-            },
-        });
-        // Log the result of the `upsert`
-        console.log("Upsert result:", user);
-        // Respond with success message
-        reply.status(200).send({ status: user ? "updated" : "created" });
+        // Check if employee exists
+        const existingEmployee = await prisma.employee.findUnique({ where: { object_id } });
+        if (!existingEmployee) {
+            // Employee does not exist, require department selection
+            reply.status(200).send({ status: "department_required" });
+            return;
+        }
+        // Employee exists, proceed as before
+        reply.status(200).send({ status: "updated" });
     });
     // Register application routes
     server.register(timesheet_1.default, { prefix: "/api" });
+    const stopBambooScheduler = (0, bamboohrSync_1.startBambooLeaveScheduler)(prisma, server.log);
+    server.addHook("onClose", async () => {
+        stopBambooScheduler();
+    });
     // Start the server
     try {
         await prisma.$connect();
