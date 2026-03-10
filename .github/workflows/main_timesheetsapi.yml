@@ -45,6 +45,7 @@ jobs:
             package.json \
             package-lock.json \
             tsconfig.json \
+            src \
             dist \
             prisma \
             deploy
