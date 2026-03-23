@@ -20,6 +20,12 @@ const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 
 const server = Fastify({ logger: true });
 
+type KeyVaultSecretBinding = {
+  envVar: string;
+  secretNameEnvVar: string;
+  defaultSecretName: string;
+};
+
 // Cache the JWKS public keys
 let publicKeys: { [key: string]: string } = {};
 
@@ -109,24 +115,59 @@ server.get("/_health", async () => {
   return { ok: true };
 });
 
-// Main async bootstrap: fetch Key Vault secret (if configured), import Prisma, register routes that use Prisma, and start.
-async function main() {
-  // If Azure Key Vault is configured and DATABASE_URL is not set, fetch it.
+async function hydrateEnvFromKeyVault() {
   const kvName = process.env.AZURE_KEYVAULT_NAME;
-  const kvSecretName = process.env.AZURE_KEYVAULT_SECRET_NAME ?? "DATABASE_URL";
-  if (kvName && !process.env.DATABASE_URL) {
+  if (!kvName) {
+    return;
+  }
+
+  const credential = new DefaultAzureCredential();
+  const vaultUrl = `https://${kvName}.vault.azure.net`;
+  const client = new SecretClient(vaultUrl, credential);
+
+  const bindings: KeyVaultSecretBinding[] = [
+    {
+      envVar: "DATABASE_URL",
+      secretNameEnvVar: "AZURE_KEYVAULT_SECRET_NAME",
+      defaultSecretName: "DATABASE_URL",
+    },
+    {
+      envVar: "BAMBOOHR_SUBDOMAIN",
+      secretNameEnvVar: "AZURE_KEYVAULT_SECRET_BAMBOOHR_SUBDOMAIN",
+      defaultSecretName: "BAMBOOHR_SUBDOMAIN",
+    },
+    {
+      envVar: "BAMBOOHR_API_KEY",
+      secretNameEnvVar: "AZURE_KEYVAULT_SECRET_BAMBOOHR_API_KEY",
+      defaultSecretName: "BAMBOOHR_API_KEY",
+    },
+  ];
+
+  for (const binding of bindings) {
+    const existing = process.env[binding.envVar]?.trim();
+    if (existing) {
+      continue;
+    }
+
+    const secretName = process.env[binding.secretNameEnvVar] ?? binding.defaultSecretName;
     try {
-      const credential = new DefaultAzureCredential();
-      const vaultUrl = `https://${kvName}.vault.azure.net`;
-      const client = new SecretClient(vaultUrl, credential);
-      const secret = await client.getSecret(kvSecretName);
-      if (secret && secret.value) {
-        process.env.DATABASE_URL = secret.value;
+      const secret = await client.getSecret(secretName);
+      if (secret.value) {
+        process.env[binding.envVar] = secret.value;
       }
     } catch (err) {
-      // Failed to fetch from Key Vault, continue with env var
+      server.log.warn(
+        { envVar: binding.envVar, secretName, err },
+        "Failed to load secret from Azure Key Vault"
+      );
     }
   }
+}
+
+// Main async bootstrap: fetch Key Vault secret (if configured), import Prisma, register routes that use Prisma, and start.
+async function main() {
+  // If Azure Key Vault is configured, hydrate runtime secrets when env vars are not already set.
+  await hydrateEnvFromKeyVault();
 
   // Dynamically import prisma after env is prepared
   const { default: prisma } = await import("./prismaClient");
