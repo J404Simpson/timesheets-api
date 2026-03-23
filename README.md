@@ -66,5 +66,3 @@ Check application logs for:
 
 - `BambooHR leave scheduler started`
 - `BambooHR leave sync completed`
-
-x
