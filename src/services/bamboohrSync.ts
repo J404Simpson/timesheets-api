@@ -29,6 +29,7 @@ const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const SYNC_START_DATE = process.env.BAMBOOHR_SYNC_START_DATE ?? "2026-01-01";
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 365);
+const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
 
 function getConfig() {
   const subdomain = process.env.BAMBOOHR_SUBDOMAIN?.trim() ?? "";
@@ -142,23 +143,51 @@ function expandDateRange(start: Date, end: Date): string[] {
 }
 
 function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: string; hours: number }> {
+  const amountUnit: string =
+    typeof request.amount === "object" && request.amount !== null
+      ? String(request.amount.unit ?? "hours").toLowerCase()
+      : "hours";
+
+  const toHours = (raw: unknown): number | null => {
+    const h = parseHours(raw);
+    if (h === null) return null;
+    return amountUnit === "days" ? Number((h * HOURS_PER_DAY).toFixed(2)) : h;
+  };
+
   const explicitDaily = request.days ?? request.dailyAmounts ?? request.dates;
 
   if (Array.isArray(explicitDaily)) {
     const mapped = explicitDaily
       .map((d: any) => {
         const date = parseDate(d.date ?? d.day ?? d.requestDate);
-        const hours = parseHours(d.hours ?? d.amount ?? d.duration);
+        const hours = toHours(d.hours ?? d.amount ?? d.duration);
         if (!date || !hours) return null;
         return { dateKey: toDateKey(date), hours };
       })
-      .filter(Boolean) as Array<{ dateKey: string; hours: number }>;
+      .filter((v): v is { dateKey: string; hours: number } => v !== null);
+    if (mapped.length > 0) return mapped;
+  }
+
+  // Handle dates as a plain object: { "2026-01-02": "1", "2026-01-03": "0.5" }
+  if (explicitDaily && typeof explicitDaily === "object" && !Array.isArray(explicitDaily)) {
+    const mapped = Object.entries(explicitDaily as Record<string, unknown>)
+      .map(([dateStr, amount]) => {
+        const date = parseDate(dateStr);
+        const hours = toHours(amount);
+        if (!date || !hours) return null;
+        return { dateKey: toDateKey(date), hours };
+      })
+      .filter((v): v is { dateKey: string; hours: number } => v !== null);
     if (mapped.length > 0) return mapped;
   }
 
   const start = parseDate(request.start ?? request.startDate ?? request.from);
   const end = parseDate(request.end ?? request.endDate ?? request.to ?? request.start ?? request.startDate ?? request.from);
-  const totalHours = parseHours(request.hours ?? request.amount ?? request.duration ?? request.totalHours);
+  const rawTotal =
+    typeof request.amount === "object" && request.amount !== null
+      ? request.amount.amount
+      : request.amount;
+  const totalHours = toHours(request.hours ?? rawTotal ?? request.duration ?? request.totalHours);
 
   if (!start || !end || !totalHours) {
     return [];
@@ -205,6 +234,40 @@ async function fetchBambooRequests(windowStart: string, windowEnd: string): Prom
   if (Array.isArray(data?.requests)) return data.requests;
   if (Array.isArray(data?.timeOffRequests)) return data.timeOffRequests;
   return [];
+}
+
+async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
+  const { subdomain, apiKey } = getConfig();
+  const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/employees/directory`;
+  const auth = Buffer.from(`${apiKey}:x`).toString("base64");
+
+  let response;
+  try {
+    response = await axios.get(url, {
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+      timeout: 20000,
+    });
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      throw new Error(`BambooHR employee directory request failed${status ? ` (${status})` : ""}`);
+    }
+    throw error;
+  }
+
+  const employees: any[] = response.data?.employees ?? [];
+  const map = new Map<string, string>();
+  for (const emp of employees) {
+    const id = String(emp.id ?? "").trim();
+    const email = (emp.workEmail ?? emp.email ?? "").trim().toLowerCase();
+    if (id && email) {
+      map.set(id, email);
+    }
+  }
+  return map;
 }
 
 function makeDateOnly(value: string): Date {
@@ -259,10 +322,31 @@ export async function runBambooLeaveSync(
   const approved = requests.filter(isApprovedRequest);
   summary.approvedRequests = approved.length;
 
+  // Fetch BambooHR employee directory to resolve employeeId → email
+  // (time-off requests do not include email directly)
+  let bambooIdToEmail = new Map<string, string>();
+  try {
+    bambooIdToEmail = await fetchBambooEmployeeDirectory();
+  } catch (err: any) {
+    logger?.warn(
+      { message: err?.message },
+      "Failed to fetch BambooHR employee directory; will fall back to per-request email fields"
+    );
+  }
+
+  const resolveEmail = (request: BambooRequest): string | null => {
+    const bambooId = String(request.employeeId ?? request.employee_id ?? "").trim();
+    if (bambooId) {
+      const email = bambooIdToEmail.get(bambooId);
+      if (email) return email;
+    }
+    return extractEmail(request);
+  };
+
   const emails = Array.from(
     new Set(
       approved
-        .map(extractEmail)
+        .map(resolveEmail)
         .filter((email): email is string => Boolean(email))
     )
   );
@@ -276,7 +360,7 @@ export async function runBambooLeaveSync(
   const dailyMap = new Map<string, DailyLeave>();
 
   for (const request of approved) {
-    const email = extractEmail(request);
+    const email = resolveEmail(request);
     if (!email) continue;
 
     const employeeId = employeeByEmail.get(email);
