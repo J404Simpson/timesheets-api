@@ -176,17 +176,29 @@ async function fetchBambooRequests(windowStart: string, windowEnd: string): Prom
   const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`;
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
 
-  const response = await axios.get(url, {
-    params: {
-      start: windowStart,
-      end: windowEnd,
-    },
-    headers: {
-      Authorization: `Basic ${auth}`,
-      Accept: "application/json",
-    },
-    timeout: 20000,
-  });
+  let response;
+  try {
+    response = await axios.get(url, {
+      params: {
+        start: windowStart,
+        end: windowEnd,
+      },
+      headers: {
+        Authorization: `Basic ${auth}`,
+        Accept: "application/json",
+      },
+      timeout: 20000,
+    });
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      const message = status === 401
+        ? "BambooHR request unauthorized (401). Verify BAMBOOHR_API_KEY contains only the API key (no email/prefix/suffix) and BAMBOOHR_SUBDOMAIN is correct."
+        : `BambooHR request failed${status ? ` (${status})` : ""}`;
+      throw new Error(message);
+    }
+    throw error;
+  }
 
   const data = response.data;
   if (Array.isArray(data)) return data;
@@ -404,7 +416,13 @@ export function startBambooLeaveScheduler(
     try {
       await runBambooLeaveSync(prisma, logger);
     } catch (error: any) {
-      logger?.error({ err: error }, "BambooHR leave sync failed");
+      logger?.error(
+        {
+          message: error?.message ?? "Unknown BambooHR sync error",
+          name: error?.name,
+        },
+        "BambooHR leave sync failed"
+      );
     }
   };
 
