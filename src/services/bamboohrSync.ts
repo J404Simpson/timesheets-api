@@ -27,8 +27,8 @@ export type BambooSyncResult = {
 
 const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
-const SYNC_START_DATE = process.env.BAMBOOHR_SYNC_START_DATE ?? "2026-01-01";
-const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 365);
+const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
+const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
 const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
 
 function getConfig() {
@@ -295,8 +295,8 @@ export async function runBambooLeaveSync(
   const config = getConfig();
 
   const now = new Date();
-  const windowStart = SYNC_START_DATE;
-  const windowEnd = toDateKey(addDays(now, LOOKAHEAD_DAYS));
+  const windowStart = toDateKey(addDays(now, -Math.max(0, LOOKBACK_DAYS)));
+  const windowEnd = toDateKey(addDays(now, Math.max(0, LOOKAHEAD_DAYS)));
 
   const summary: BambooSyncResult = {
     enabled: config.enabled,
@@ -488,7 +488,7 @@ export function startBambooLeaveScheduler(
   prisma: PrismaClient,
   logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">
 ): () => void {
-  const intervalMinutes = Number(process.env.BAMBOOHR_SYNC_INTERVAL_MINUTES ?? 60);
+  const intervalMinutes = Number(process.env.BAMBOOHR_SYNC_INTERVAL_MINUTES ?? 240);
   const runOnStartup = (process.env.BAMBOOHR_SYNC_RUN_ON_STARTUP ?? "true").toLowerCase() !== "false";
 
   if (!isBambooSyncConfigured()) {
