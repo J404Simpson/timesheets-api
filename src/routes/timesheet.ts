@@ -2,7 +2,7 @@ import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } f
 import prisma from "../prismaClient";
 
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
-  // GET /entries/week - return entries for the current week for the authenticated user
+  // GET /entries/week - return entries for the current (or specified) week for the authenticated user
   fastify.get("/entries/week", async (request, reply) => {
     const user = (request as any).user;
     const object_id = user?.oid;
@@ -15,12 +15,14 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       if (!employee) {
         return reply.status(404).send({ error: "Employee not found" });
       }
-      // Calculate start and end of current week (Monday to Sunday)
-      const now = new Date();
-      const dayOfWeek = now.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      // Optional weekOf param (YYYY-MM-DD) — defaults to today
+      const { weekOf } = request.query as { weekOf?: string };
+      const referenceDate = weekOf ? new Date(`${weekOf}T12:00:00`) : new Date();
+      // Calculate start and end of the week (Monday to Sunday) for the reference date
+      const dayOfWeek = referenceDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
       const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // Adjust if Sunday
-      const monday = new Date(now);
-      monday.setDate(now.getDate() + diffToMonday);
+      const monday = new Date(referenceDate);
+      monday.setDate(referenceDate.getDate() + diffToMonday);
       monday.setHours(0, 0, 0, 0);
       const sunday = new Date(monday);
       sunday.setDate(monday.getDate() + 6);
