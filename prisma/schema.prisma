@@ -7,9 +7,9 @@ datasource db {
 }
 
 model employee {
-  id            Int         @id(map: "User_pkey") @default(autoincrement())
-  object_id     String      @unique(map: "User_object_id_key") @db.VarChar(255)
-  email         String      @unique(map: "User_email_key") @db.VarChar(255)
+  id            Int         @id(map: "employee_pkey") @default(autoincrement())
+  object_id     String      @unique(map: "employee_object_id_key") @db.VarChar(255)
+  email         String      @unique(map: "employee_email_key") @db.VarChar(255)
   first_name    String?     @db.VarChar(100)
   last_name     String?     @db.VarChar(100)
   tenant_id     String?     @db.VarChar(255)
