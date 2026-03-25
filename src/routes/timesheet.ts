@@ -196,6 +196,39 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   );
 
+  // GET /projects/:projectId/phases/:phaseId/tasks - return enabled tasks linked to both project phase and phase
+  fastify.get(
+    "/projects/:projectId/phases/:phaseId/tasks",
+    async (
+      request: FastifyRequest<{ Params: { projectId: string; phaseId: string } }>,
+      reply: FastifyReply
+    ) => {
+      const projectId = Number(request.params.projectId);
+      const phaseId = Number(request.params.phaseId);
+      if (Number.isNaN(projectId) || Number.isNaN(phaseId)) {
+        return reply.status(400).send({ error: "projectId and phaseId are required" });
+      }
+
+      try {
+        const tasks = await prisma.$queryRaw`
+          SELECT DISTINCT t.id, t.name, t.enabled
+          FROM task t
+          INNER JOIN phase_task pt ON pt.task_id = t.id
+          INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
+          WHERE pp.project_id = ${projectId}
+            AND pt.phase_id = ${phaseId}
+            AND t.enabled = true
+          ORDER BY t.name ASC
+        `;
+
+        return reply.status(200).send({ tasks });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to fetch tasks for project phase" });
+      }
+    }
+  );
+
   // POST /entries - create a new timesheet entry for the authenticated user
   fastify.post("/entries", async (request, reply) => {
     const user = (request as any).user;
