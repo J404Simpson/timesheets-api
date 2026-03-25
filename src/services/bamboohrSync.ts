@@ -22,6 +22,8 @@ export type BambooSyncResult = {
   upsertedDays: number;
   deletedEntries: number;
   skippedMissingEmployee: number;
+  canceledRequests: number;
+  canceledCleanups: number;
   errors: string[];
 };
 
@@ -30,6 +32,7 @@ const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
 const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
+const CANCEL_LOOKBACK_DAYS = Number(process.env.BAMBOOHR_CANCEL_LOOKBACK_DAYS ?? 90);
 
 function getConfig() {
   const subdomain = process.env.BAMBOOHR_SUBDOMAIN?.trim() ?? "";
@@ -200,7 +203,7 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
   return dateKeys.map((dateKey) => ({ dateKey, hours: hoursPerDay }));
 }
 
-async function fetchBambooRequests(windowStart: string, windowEnd: string): Promise<BambooRequest[]> {
+async function fetchBambooRequests(windowStart: string, windowEnd: string, status = "approved"): Promise<BambooRequest[]> {
   const { subdomain, apiKey } = getConfig();
   const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`;
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
@@ -211,6 +214,7 @@ async function fetchBambooRequests(windowStart: string, windowEnd: string): Prom
       params: {
         start: windowStart,
         end: windowEnd,
+        status,
       },
       headers: {
         Authorization: `Basic ${auth}`,
@@ -308,6 +312,8 @@ export async function runBambooLeaveSync(
     upsertedDays: 0,
     deletedEntries: 0,
     skippedMissingEmployee: 0,
+    canceledRequests: 0,
+    canceledCleanups: 0,
     errors: [],
   };
 
@@ -327,9 +333,8 @@ export async function runBambooLeaveSync(
   let bambooIdToEmail = new Map<string, string>();
   try {
     bambooIdToEmail = await fetchBambooEmployeeDirectory();
-  } catch (err: any) {
+  } catch {
     logger?.warn(
-      { message: err?.message },
       "Failed to fetch BambooHR employee directory; will fall back to per-request email fields"
     );
   }
@@ -480,6 +485,83 @@ export async function runBambooLeaveSync(
     summary.deletedEntries += deleted.count;
   }
 
+  // --- Cancellation cleanup pass ---
+  // Fetch canceled and superseded requests over a wider lookback window so that
+  // requests which were approved (and synced) in the past but later canceled or
+  // superseded have their corresponding DB entries removed.
+  const cancelWindowStart = toDateKey(addDays(now, -Math.max(0, CANCEL_LOOKBACK_DAYS)));
+  const canceledRequests: BambooRequest[] = [];
+  for (const cancelStatus of ["canceled", "superseded"]) {
+    try {
+      const fetched = await fetchBambooRequests(cancelWindowStart, windowEnd, cancelStatus);
+      canceledRequests.push(...fetched);
+    } catch {
+      logger?.warn(
+        `Failed to fetch ${cancelStatus} BambooHR requests; skipping that status in cleanup`
+      );
+    }
+  }
+
+  summary.canceledRequests = canceledRequests.length;
+
+  if (canceledRequests.length > 0) {
+    // Resolve any employee emails from canceled requests that weren't in the
+    // approved set so we can look them up in the DB.
+    const newEmails = Array.from(
+      new Set(
+        canceledRequests
+          .map(resolveEmail)
+          .filter((e): e is string => Boolean(e))
+          .filter((e) => !employeeByEmail.has(e))
+      )
+    );
+    if (newEmails.length > 0) {
+      const newEmployees = await prisma.employee.findMany({
+        where: { email: { in: newEmails } },
+        select: { id: true, email: true },
+      });
+      for (const emp of newEmployees) {
+        employeeByEmail.set(emp.email.toLowerCase(), emp.id);
+      }
+    }
+
+    for (const request of canceledRequests) {
+      const requestId = extractRequestId(request);
+      const email = resolveEmail(request);
+      if (!email) continue;
+      const employeeId = employeeByEmail.get(email);
+      if (!employeeId) continue;
+
+      // Fetch all BambooHR leave entries for this employee and filter in memory
+      // for the specific requestId stored in the notes field.
+      // Notes format: "[BambooHR Leave] requestIds=8690" or "requestIds=8690,8691"
+      // Matching by requestId is precise — a new approved request will have a
+      // different ID and will never be matched here.
+      const candidates = await prisma.entry.findMany({
+        where: {
+          employee_id: employeeId,
+          project_id: LEAVE_PROJECT_ID,
+          notes: { startsWith: LEAVE_NOTE_PREFIX },
+        },
+        select: { id: true, notes: true },
+      });
+
+      const idsToDelete = candidates
+        .filter((e) => {
+          const noteIds = (e.notes ?? "").replace(/^.*requestIds=/, "").split(",");
+          return noteIds.includes(requestId);
+        })
+        .map((e) => e.id);
+
+      if (idsToDelete.length > 0) {
+        const deleted = await prisma.entry.deleteMany({
+          where: { id: { in: idsToDelete } },
+        });
+        summary.canceledCleanups += deleted.count;
+      }
+    }
+  }
+
   logger?.info({ bambooSync: summary }, "BambooHR leave sync completed");
   return summary;
 }
@@ -499,14 +581,8 @@ export function startBambooLeaveScheduler(
   const run = async () => {
     try {
       await runBambooLeaveSync(prisma, logger);
-    } catch (error: any) {
-      logger?.error(
-        {
-          message: error?.message ?? "Unknown BambooHR sync error",
-          name: error?.name,
-        },
-        "BambooHR leave sync failed"
-      );
+    } catch {
+      logger?.error("BambooHR leave sync failed");
     }
   };
 

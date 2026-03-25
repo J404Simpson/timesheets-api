@@ -18,7 +18,32 @@ const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
 const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
 
-const server = Fastify({ logger: true });
+const server = Fastify({
+  logger: {
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.body.email",
+        "req.body.firstName",
+        "req.body.lastName",
+        "req.body.object_id",
+        "req.body.notes",
+        "req.body.type",
+        "req.body.name",
+        "req.body.employeeEmail",
+        "req.body.employeeWorkEmail",
+        "req.body.workEmail",
+        "req.body.status",
+        "req.body.actions",
+        "req.body.dates",
+        "req.body.amount",
+        "req.body.employee",
+        "req.body.requests",
+      ],
+      remove: true,
+    },
+  },
+});
 
 type KeyVaultSecretBinding = {
   envVar: string;
