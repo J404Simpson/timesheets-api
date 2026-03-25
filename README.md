@@ -2,6 +2,27 @@
 
 Fastify + TypeScript + Prisma backend for the Timesheets app.
 
+## Local run setup
+
+Create or update `.env` in the `timesheets-api` root with:
+
+```dotenv
+DATABASE_URL=<postgres-connection-string>
+PORT=5000
+CORS_ORIGIN=http://localhost:5173
+TENANT_ID=<entra-tenant-id>
+CLIENT_ID=<api-client-id>
+```
+
+Run locally with:
+
+```bash
+npm install
+npm run dev
+```
+
+The API listens on `http://localhost:5000` by default.
+
 ## BambooHR leave sync setup
 
 The API can sync approved BambooHR leave requests into `entry` rows.
