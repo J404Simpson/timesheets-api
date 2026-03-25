@@ -2,6 +2,39 @@ import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } f
 import prisma from "../prismaClient";
 
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
+  // GET /me - return current authenticated employee profile
+  fastify.get("/me", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    try {
+      const employee = await prisma.employee.findUnique({
+        where: { object_id },
+        select: {
+          id: true,
+          object_id: true,
+          email: true,
+          first_name: true,
+          last_name: true,
+          admin: true,
+          department_id: true,
+        },
+      });
+
+      if (!employee) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      return reply.status(200).send({ employee });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to fetch current employee" });
+    }
+  });
+
   // GET /entries/week - return entries for the current (or specified) week for the authenticated user
   fastify.get("/entries/week", async (request, reply) => {
     const user = (request as any).user;
