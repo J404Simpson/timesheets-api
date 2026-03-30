@@ -1,6 +1,14 @@
 import { FastifyInstance, FastifyPluginOptions, FastifyRequest, FastifyReply } from "fastify";
 import prisma from "../prismaClient";
 
+const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
+const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
+
+const isLeaveEntryRecord = (entry: { project_id?: number | null; notes?: string | null }) => {
+  if (entry.project_id != null && entry.project_id === LEAVE_PROJECT_ID) return true;
+  return (entry.notes ?? "").startsWith(LEAVE_NOTE_PREFIX);
+};
+
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
   // GET /me - return current authenticated employee profile
   fastify.get("/me", async (request, reply) => {
@@ -327,6 +335,34 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       const startDateTime = new Date(Date.UTC(1970, 0, 1, startH, startM, 0, 0));
       const endDateTime = new Date(Date.UTC(1970, 0, 1, endH, endM, 0, 0));
       const computedHours = Number((((endMinutes - startMinutes) / 60)).toFixed(2));
+      const isLeaveRequest = Number(projectId) === LEAVE_PROJECT_ID;
+
+      const overlapping = await prisma.entry.findMany({
+        where: {
+          employee_id: employee.id,
+          date: entryDate,
+          start_time: { lt: endDateTime },
+          end_time: { gt: startDateTime },
+        },
+        select: { id: true, project_id: true, notes: true },
+      });
+
+      if (overlapping.length > 0) {
+        const hasLeaveOverlap = overlapping.some((entry) => isLeaveEntryRecord(entry));
+        if (isLeaveRequest) {
+          await prisma.entry.deleteMany({
+            where: { id: { in: overlapping.map((entry) => entry.id) } },
+          });
+        } else if (hasLeaveOverlap) {
+          return reply.status(409).send({
+            error: "Cannot create entry that overlaps approved leave",
+          });
+        } else {
+          return reply.status(409).send({
+            error: "Entry overlaps an existing timesheet entry",
+          });
+        }
+      }
 
       let projectPhaseId: number | null = null;
       if (phaseId != null) {
@@ -364,6 +400,153 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: "Failed to create entry" });
+    }
+  });
+
+  // PUT /entries/:id - update an existing entry for the authenticated user
+  fastify.put("/entries/:id", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    const entryId = Number((request.params as any).id);
+    if (isNaN(entryId)) {
+      return reply.status(400).send({ error: "Invalid entry id" });
+    }
+
+    const {
+      projectId,
+      phaseId,
+      taskId,
+      date,
+      startTime,
+      endTime,
+      hours,
+      notes,
+      type,
+    } = request.body as {
+      projectId: number;
+      phaseId?: number | null;
+      taskId?: number | null;
+      date: string;
+      startTime: string;
+      endTime: string;
+      hours?: number;
+      notes?: string;
+      type?: boolean;
+    };
+
+    if (!projectId || !date || !startTime || !endTime) {
+      return reply.status(400).send({ error: "projectId, date, startTime and endTime are required" });
+    }
+
+    try {
+      const employee = await prisma.employee.findUnique({ where: { object_id } });
+      if (!employee) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      const existing = await prisma.entry.findUnique({ where: { id: entryId } });
+      if (!existing) {
+        return reply.status(404).send({ error: "Entry not found" });
+      }
+
+      if (existing.employee_id !== employee.id) {
+        return reply.status(403).send({ error: "Cannot edit other user's entries" });
+      }
+
+      if (isLeaveEntryRecord(existing)) {
+        return reply.status(400).send({ error: "Cannot edit leave entries" });
+      }
+
+      const [startH, startM] = startTime.split(":").map((v) => Number(v));
+      const [endH, endM] = endTime.split(":").map((v) => Number(v));
+      if (
+        Number.isNaN(startH) ||
+        Number.isNaN(startM) ||
+        Number.isNaN(endH) ||
+        Number.isNaN(endM)
+      ) {
+        return reply.status(400).send({ error: "Invalid startTime or endTime format" });
+      }
+
+      const startMinutes = startH * 60 + startM;
+      const endMinutes = endH * 60 + endM;
+      if (endMinutes <= startMinutes) {
+        return reply.status(400).send({ error: "endTime must be after startTime" });
+      }
+
+      const entryDate = new Date(`${date}T00:00:00.000Z`);
+      if (Number.isNaN(entryDate.getTime())) {
+        return reply.status(400).send({ error: "Invalid date format" });
+      }
+
+      const startDateTime = new Date(Date.UTC(1970, 0, 1, startH, startM, 0, 0));
+      const endDateTime = new Date(Date.UTC(1970, 0, 1, endH, endM, 0, 0));
+      const computedHours = Number((((endMinutes - startMinutes) / 60)).toFixed(2));
+
+      const overlapping = await prisma.entry.findMany({
+        where: {
+          employee_id: employee.id,
+          date: entryDate,
+          start_time: { lt: endDateTime },
+          end_time: { gt: startDateTime },
+          id: { not: entryId },
+        },
+        select: { id: true, project_id: true, notes: true },
+      });
+
+      if (overlapping.length > 0) {
+        const hasLeaveOverlap = overlapping.some((entry) => isLeaveEntryRecord(entry));
+        if (hasLeaveOverlap) {
+          return reply.status(409).send({
+            error: "Cannot update entry to overlap approved leave",
+          });
+        } else {
+          return reply.status(409).send({
+            error: "Entry overlaps an existing timesheet entry",
+          });
+        }
+      }
+
+      let projectPhaseId: number | null = null;
+      if (phaseId != null) {
+        const projectPhase = await prisma.project_phase.findFirst({
+          where: {
+            project_id: Number(projectId),
+            phase_id: Number(phaseId),
+          },
+          select: { id: true },
+        });
+
+        if (!projectPhase) {
+          return reply.status(400).send({ error: "Selected phase is not linked to project" });
+        }
+
+        projectPhaseId = projectPhase.id;
+      }
+
+      const updated = await prisma.entry.update({
+        where: { id: entryId },
+        data: {
+          project_id: Number(projectId),
+          task_id: taskId != null ? Number(taskId) : null,
+          project_phase_id: projectPhaseId,
+          date: entryDate,
+          start_time: startDateTime,
+          end_time: endDateTime,
+          hours: hours != null ? Number(hours) : computedHours,
+          notes: notes ?? null,
+          type: typeof type === "boolean" ? type : false,
+        },
+      });
+
+      return reply.status(200).send({ entry: updated });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to update entry" });
     }
   });
 }
