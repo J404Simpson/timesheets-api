@@ -549,6 +549,46 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       return reply.status(500).send({ error: "Failed to update entry" });
     }
   });
+
+  // DELETE /entries/:id - delete an existing entry for the authenticated user
+  fastify.delete("/entries/:id", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    const entryId = Number((request.params as any).id);
+    if (isNaN(entryId)) {
+      return reply.status(400).send({ error: "Invalid entry id" });
+    }
+
+    try {
+      const employee = await prisma.employee.findUnique({ where: { object_id } });
+      if (!employee) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      const existing = await prisma.entry.findUnique({ where: { id: entryId } });
+      if (!existing) {
+        return reply.status(404).send({ error: "Entry not found" });
+      }
+
+      if (existing.employee_id !== employee.id) {
+        return reply.status(403).send({ error: "Cannot delete other user's entries" });
+      }
+
+      if (isLeaveEntryRecord(existing)) {
+        return reply.status(400).send({ error: "Cannot delete leave entries" });
+      }
+
+      await prisma.entry.delete({ where: { id: entryId } });
+      return reply.status(200).send({ deleted: true, id: entryId });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to delete entry" });
+    }
+  });
 }
 
 // type EntryPayload = {
