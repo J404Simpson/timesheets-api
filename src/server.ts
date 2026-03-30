@@ -209,7 +209,11 @@ async function main() {
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const fastifyCors = require("@fastify/cors");
-    await server.register(fastifyCors, { origin: CORS_ORIGIN });
+    await server.register(fastifyCors, {
+      origin: CORS_ORIGIN,
+      methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Authorization", "Content-Type"],
+    });
   } catch (err) {
     // Could not register CORS, continuing without it
   }
