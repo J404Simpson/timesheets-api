@@ -2,6 +2,10 @@
 
 Fastify + TypeScript + Prisma backend for the Timesheets app.
 
+## Runtime and tooling
+
+- Node.js: `22.x`
+
 ## Local run setup
 
 Create or update `.env` in the `timesheets-api` root with:
@@ -22,6 +26,13 @@ npm run dev
 ```
 
 The API listens on `http://localhost:5000` by default.
+
+## Frontend dependency
+
+The API is typically consumed by the frontend app running at `http://localhost:5173`.
+
+- Keep `CORS_ORIGIN` aligned with your frontend URL.
+- Frontend setup instructions are maintained in the frontend repo README: `../timesheets/README.md`.
 
 ## BambooHR leave sync setup
 
