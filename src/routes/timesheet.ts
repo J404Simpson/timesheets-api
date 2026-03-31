@@ -43,6 +43,50 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   });
 
+  // GET /admin/users - return non-admin users for admin tooling
+  fastify.get("/admin/users", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    try {
+      const requester = await prisma.employee.findUnique({
+        where: { object_id },
+        select: { id: true, admin: true },
+      });
+
+      if (!requester) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      if (requester.admin !== true) {
+        return reply.status(403).send({ error: "Admin access required" });
+      }
+
+      const users = await prisma.employee.findMany({
+        where: {
+          OR: [{ admin: false }, { admin: null }],
+        },
+        select: {
+          id: true,
+          first_name: true,
+          last_name: true,
+          email: true,
+          object_id: true,
+          department_id: true,
+        },
+        orderBy: [{ first_name: "asc" }, { last_name: "asc" }, { email: "asc" }],
+      });
+
+      return reply.status(200).send({ users });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to fetch admin user list" });
+    }
+  });
+
   // GET /entries/week - return entries for the current (or specified) week for the authenticated user
   fastify.get("/entries/week", async (request, reply) => {
     const user = (request as any).user;
@@ -51,11 +95,36 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       return reply.status(401).send({ error: "Authenticated user required" });
     }
     try {
-      // Get employee by object_id
-      const employee = await prisma.employee.findUnique({ where: { object_id } });
-      if (!employee) {
+      // Get requesting employee by object_id
+      const requestingEmployee = await prisma.employee.findUnique({
+        where: { object_id },
+        select: { id: true, admin: true },
+      });
+      if (!requestingEmployee) {
         return reply.status(404).send({ error: "Employee not found" });
       }
+
+      // Optional employeeId param: admin can inspect another user's week entries
+      const { employeeId } = request.query as { employeeId?: string };
+      const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
+
+      let targetEmployeeId = requestingEmployee.id;
+      if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
+        if (requestedEmployeeId !== requestingEmployee.id && requestingEmployee.admin !== true) {
+          return reply.status(403).send({ error: "Admin access required" });
+        }
+
+        const targetEmployee = await prisma.employee.findUnique({
+          where: { id: requestedEmployeeId },
+          select: { id: true },
+        });
+        if (!targetEmployee) {
+          return reply.status(404).send({ error: "Target employee not found" });
+        }
+
+        targetEmployeeId = targetEmployee.id;
+      }
+
       // Optional weekOf param (YYYY-MM-DD) — defaults to today
       const { weekOf } = request.query as { weekOf?: string };
       const referenceDate = weekOf ? new Date(`${weekOf}T12:00:00`) : new Date();
@@ -71,7 +140,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       // Fetch entries for the week
       const entries = await prisma.entry.findMany({
         where: {
-          employee_id: employee.id,
+          employee_id: targetEmployeeId,
           date: {
             gte: monday,
             lte: sunday,
@@ -453,13 +522,15 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(404).send({ error: "Entry not found" });
       }
 
-      if (existing.employee_id !== employee.id) {
+      if (existing.employee_id !== employee.id && employee.admin !== true) {
         return reply.status(403).send({ error: "Cannot edit other user's entries" });
       }
 
       if (isLeaveEntryRecord(existing)) {
         return reply.status(400).send({ error: "Cannot edit leave entries" });
       }
+
+      const targetEmployeeId = existing.employee_id;
 
       const [startH, startM] = startTime.split(":").map((v) => Number(v));
       const [endH, endM] = endTime.split(":").map((v) => Number(v));
@@ -489,7 +560,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       const overlapping = await prisma.entry.findMany({
         where: {
-          employee_id: employee.id,
+          employee_id: targetEmployeeId,
           date: entryDate,
           start_time: { lt: endDateTime },
           end_time: { gt: startDateTime },
@@ -574,7 +645,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(404).send({ error: "Entry not found" });
       }
 
-      if (existing.employee_id !== employee.id) {
+      if (existing.employee_id !== employee.id && employee.admin !== true) {
         return reply.status(403).send({ error: "Cannot delete other user's entries" });
       }
 
