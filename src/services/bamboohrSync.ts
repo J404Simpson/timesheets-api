@@ -1,4 +1,3 @@
-import axios from "axios";
 import type { FastifyBaseLogger } from "fastify";
 import type { PrismaClient, entry as EntryRecord } from "@prisma/client";
 
@@ -205,39 +204,36 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
 
 async function fetchBambooRequests(windowStart: string, windowEnd: string, status = "approved"): Promise<BambooRequest[]> {
   const { subdomain, apiKey } = getConfig();
-  const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`;
+  const url = new URL(`https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`);
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
+  url.searchParams.set("start", windowStart);
+  url.searchParams.set("end", windowEnd);
+  url.searchParams.set("status", status);
 
-  let response;
   try {
-    response = await axios.get(url, {
-      params: {
-        start: windowStart,
-        end: windowEnd,
-        status,
-      },
+    const response = await fetch(url, {
       headers: {
         Authorization: `Basic ${auth}`,
         Accept: "application/json",
       },
-      timeout: 20000,
+      signal: AbortSignal.timeout(20000),
     });
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const status = error.response?.status;
-      const message = status === 401
+
+    if (!response.ok) {
+      const message = response.status === 401
         ? "BambooHR request unauthorized (401). Verify BAMBOOHR_API_KEY contains only the API key (no email/prefix/suffix) and BAMBOOHR_SUBDOMAIN is correct."
-        : `BambooHR request failed${status ? ` (${status})` : ""}`;
+        : `BambooHR request failed (${response.status})`;
       throw new Error(message);
     }
-    throw error;
-  }
 
-  const data = response.data;
-  if (Array.isArray(data)) return data;
-  if (Array.isArray(data?.requests)) return data.requests;
-  if (Array.isArray(data?.timeOffRequests)) return data.timeOffRequests;
-  return [];
+    const data = await response.json();
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.requests)) return data.requests;
+    if (Array.isArray(data?.timeOffRequests)) return data.timeOffRequests;
+    return [];
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "BambooHR request failed");
+  }
 }
 
 async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
@@ -245,33 +241,37 @@ async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
   const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/employees/directory`;
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
 
-  let response;
   try {
-    response = await axios.get(url, {
+    const response = await fetch(url, {
       headers: {
         Authorization: `Basic ${auth}`,
         Accept: "application/json",
       },
-      timeout: 20000,
+      signal: AbortSignal.timeout(20000),
     });
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const status = error.response?.status;
-      throw new Error(`BambooHR employee directory request failed${status ? ` (${status})` : ""}`);
-    }
-    throw error;
-  }
 
-  const employees: any[] = response.data?.employees ?? [];
-  const map = new Map<string, string>();
-  for (const emp of employees) {
-    const id = String(emp.id ?? "").trim();
-    const email = (emp.workEmail ?? emp.email ?? "").trim().toLowerCase();
-    if (id && email) {
-      map.set(id, email);
+    if (!response.ok) {
+      throw new Error(`BambooHR employee directory request failed (${response.status})`);
     }
+
+    const data = await response.json();
+    const employees: any[] = data?.employees ?? [];
+    const map = new Map<string, string>();
+    for (const emp of employees) {
+      const id = String(emp.id ?? "").trim();
+      const email = (emp.workEmail ?? emp.email ?? "").trim().toLowerCase();
+      if (id && email) {
+        map.set(id, email);
+      }
+    }
+    return map;
+  } catch (error) {
+    throw new Error(
+      error instanceof Error
+        ? error.message
+        : "BambooHR employee directory request failed"
+    );
   }
-  return map;
 }
 
 function makeDateOnly(value: string): Date {

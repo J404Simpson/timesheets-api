@@ -2,7 +2,6 @@ import Fastify, { FastifyRequest, FastifyReply } from "fastify";
 import dotenv from "dotenv";
 import jwt, { JwtPayload } from "jsonwebtoken";
 import timesheetRoutes from "./routes/timesheet";
-import axios from "axios";
 import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 import { startBambooLeaveScheduler } from "./services/bamboohrSync";
@@ -59,8 +58,13 @@ async function fetchPublicKeys(): Promise<{ [key: string]: string }> {
   if (Object.keys(publicKeys).length > 0) return publicKeys;
 
   try {
-    const response = await axios.get(JWKS_URI, { timeout: 10000 });
-    const jwks = response.data;
+    const response = await fetch(JWKS_URI, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch JWKS (${response.status})`);
+    }
+    const jwks = await response.json();
     const keys: { [key: string]: string } = {};
 
     jwks.keys.forEach((key: any) => {

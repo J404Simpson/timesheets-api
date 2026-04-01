@@ -40,7 +40,6 @@ const fastify_1 = __importDefault(require("fastify"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const timesheet_1 = __importDefault(require("./routes/timesheet"));
-const axios_1 = __importDefault(require("axios"));
 const identity_1 = require("@azure/identity");
 const keyvault_secrets_1 = require("@azure/keyvault-secrets");
 const bamboohrSync_1 = require("./services/bamboohrSync");
@@ -53,7 +52,32 @@ const AUDIENCE = `api://${CLIENT_ID}`;
 const AUTHORITY = `https://login.microsoftonline.com/${TENANT_ID}`;
 const JWKS_URI = `${AUTHORITY}/discovery/v2.0/keys`;
 const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS?.split(",") || [];
-const server = (0, fastify_1.default)({ logger: true });
+const server = (0, fastify_1.default)({
+    logger: {
+        redact: {
+            paths: [
+                "req.headers.authorization",
+                "req.body.email",
+                "req.body.firstName",
+                "req.body.lastName",
+                "req.body.object_id",
+                "req.body.notes",
+                "req.body.type",
+                "req.body.name",
+                "req.body.employeeEmail",
+                "req.body.employeeWorkEmail",
+                "req.body.workEmail",
+                "req.body.status",
+                "req.body.actions",
+                "req.body.dates",
+                "req.body.amount",
+                "req.body.employee",
+                "req.body.requests",
+            ],
+            remove: true,
+        },
+    },
+});
 // Cache the JWKS public keys
 let publicKeys = {};
 // Fetch public keys from Azure AD JWKS
@@ -61,8 +85,13 @@ async function fetchPublicKeys() {
     if (Object.keys(publicKeys).length > 0)
         return publicKeys;
     try {
-        const response = await axios_1.default.get(JWKS_URI, { timeout: 10000 });
-        const jwks = response.data;
+        const response = await fetch(JWKS_URI, {
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) {
+            throw new Error(`Failed to fetch JWKS (${response.status})`);
+        }
+        const jwks = await response.json();
         const keys = {};
         jwks.keys.forEach((key) => {
             const pubKey = `-----BEGIN CERTIFICATE-----\n${key.x5c[0]}\n-----END CERTIFICATE-----`;
@@ -128,25 +157,52 @@ server.addHook("onRequest", validateToken);
 server.get("/_health", async () => {
     return { ok: true };
 });
-// Main async bootstrap: fetch Key Vault secret (if configured), import Prisma, register routes that use Prisma, and start.
-async function main() {
-    // If Azure Key Vault is configured and DATABASE_URL is not set, fetch it.
+async function hydrateEnvFromKeyVault() {
     const kvName = process.env.AZURE_KEYVAULT_NAME;
-    const kvSecretName = process.env.AZURE_KEYVAULT_SECRET_NAME ?? "DATABASE_URL";
-    if (kvName && !process.env.DATABASE_URL) {
+    if (!kvName) {
+        return;
+    }
+    const credential = new identity_1.DefaultAzureCredential();
+    const vaultUrl = `https://${kvName}.vault.azure.net`;
+    const client = new keyvault_secrets_1.SecretClient(vaultUrl, credential);
+    const bindings = [
+        {
+            envVar: "DATABASE_URL",
+            secretNameEnvVar: "AZURE_KEYVAULT_SECRET_NAME",
+            defaultSecretName: "DATABASE_URL",
+        },
+        {
+            envVar: "BAMBOOHR_SUBDOMAIN",
+            secretNameEnvVar: "AZURE_KEYVAULT_SECRET_BAMBOOHR_SUBDOMAIN",
+            defaultSecretName: "BAMBOOHR_SUBDOMAIN",
+        },
+        {
+            envVar: "BAMBOOHR_API_KEY",
+            secretNameEnvVar: "AZURE_KEYVAULT_SECRET_BAMBOOHR_API_KEY",
+            defaultSecretName: "BAMBOOHR_API_KEY",
+        },
+    ];
+    for (const binding of bindings) {
+        const existing = process.env[binding.envVar]?.trim();
+        if (existing) {
+            continue;
+        }
+        const secretName = process.env[binding.secretNameEnvVar] ?? binding.defaultSecretName;
         try {
-            const credential = new identity_1.DefaultAzureCredential();
-            const vaultUrl = `https://${kvName}.vault.azure.net`;
-            const client = new keyvault_secrets_1.SecretClient(vaultUrl, credential);
-            const secret = await client.getSecret(kvSecretName);
-            if (secret && secret.value) {
-                process.env.DATABASE_URL = secret.value;
+            const secret = await client.getSecret(secretName);
+            if (secret.value) {
+                process.env[binding.envVar] = secret.value;
             }
         }
         catch (err) {
-            // Failed to fetch from Key Vault, continue with env var
+            server.log.warn({ envVar: binding.envVar, secretName, err }, "Failed to load secret from Azure Key Vault");
         }
     }
+}
+// Main async bootstrap: fetch Key Vault secret (if configured), import Prisma, register routes that use Prisma, and start.
+async function main() {
+    // If Azure Key Vault is configured, hydrate runtime secrets when env vars are not already set.
+    await hydrateEnvFromKeyVault();
     // Dynamically import prisma after env is prepared
     const { default: prisma } = await Promise.resolve().then(() => __importStar(require("./prismaClient")));
     // Re-enable rate-limit and CORS if available, but keep server resilient if registration fails.
@@ -161,7 +217,11 @@ async function main() {
     try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const fastifyCors = require("@fastify/cors");
-        await server.register(fastifyCors, { origin: CORS_ORIGIN });
+        await server.register(fastifyCors, {
+            origin: CORS_ORIGIN,
+            methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allowedHeaders: ["Authorization", "Content-Type"],
+        });
     }
     catch (err) {
         // Could not register CORS, continuing without it
