@@ -7,6 +7,57 @@ exports.default = timesheetRoutes;
 const prismaClient_1 = __importDefault(require("../prismaClient"));
 const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
+const DAY_MS = 24 * 60 * 60 * 1000;
+function getClientTimezoneOffsetMinutes(request) {
+    const raw = (request.headers["x-timezone-offset-minutes"] ??
+        request.headers["x-tz-offset-minutes"]);
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+function dateKeyToDayNumber(dateKey) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+    if (!match)
+        return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const utcMs = Date.UTC(year, month - 1, day);
+    if (Number.isNaN(utcMs))
+        return null;
+    return Math.floor(utcMs / DAY_MS);
+}
+function valueToDateKey(value) {
+    if (typeof value === "string")
+        return value.slice(0, 10);
+    return value.toISOString().slice(0, 10);
+}
+function getClientCurrentDayNumber(offsetMinutes) {
+    const localMs = Date.now() - offsetMinutes * 60000;
+    return Math.floor(localMs / DAY_MS);
+}
+function getDayOfWeekFromDayNumber(dayNumber) {
+    // 1970-01-01 was Thursday (4 when Sunday=0)
+    return (dayNumber + 4) % 7;
+}
+function isPreviousWeekDateForClient(dateKey, offsetMinutes) {
+    const entryDay = dateKeyToDayNumber(dateKey);
+    if (entryDay == null)
+        return false;
+    const currentDay = getClientCurrentDayNumber(offsetMinutes);
+    const dow = getDayOfWeekFromDayNumber(currentDay);
+    const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+    const currentMonday = currentDay - daysSinceMonday;
+    const previousMonday = currentMonday - 7;
+    const previousSunday = currentMonday - 1;
+    return entryDay >= previousMonday && entryDay <= previousSunday;
+}
+function isPastPreviousWeekCutoffForClient(offsetMinutes) {
+    const currentDay = getClientCurrentDayNumber(offsetMinutes);
+    const dow = getDayOfWeekFromDayNumber(currentDay);
+    // Monday (1) is still allowed up to local midnight; Tuesday+ blocked.
+    return dow !== 1;
+}
 const isLeaveEntryRecord = (entry) => {
     if (entry.project_id != null && entry.project_id === LEAVE_PROJECT_ID)
         return true;
@@ -325,6 +376,18 @@ async function timesheetRoutes(fastify, opts) {
             if (!employee) {
                 return reply.status(404).send({ error: "Employee not found" });
             }
+            const timezoneOffsetMinutes = getClientTimezoneOffsetMinutes(request);
+            const policyDateKey = valueToDateKey(date);
+            if (dateKeyToDayNumber(policyDateKey) == null) {
+                return reply.status(400).send({ error: "Invalid date format" });
+            }
+            if (employee.admin !== true &&
+                isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+                isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)) {
+                return reply.status(403).send({
+                    error: "Previous week entries can only be added on Monday unless you are an admin",
+                });
+            }
             const [startH, startM] = startTime.split(":").map((v) => Number(v));
             const [endH, endM] = endTime.split(":").map((v) => Number(v));
             if (Number.isNaN(startH) ||
@@ -437,6 +500,20 @@ async function timesheetRoutes(fastify, opts) {
             }
             if (isLeaveEntryRecord(existing)) {
                 return reply.status(400).send({ error: "Cannot edit leave entries" });
+            }
+            const timezoneOffsetMinutes = getClientTimezoneOffsetMinutes(request);
+            const requestedPolicyDateKey = valueToDateKey(date);
+            if (dateKeyToDayNumber(requestedPolicyDateKey) == null) {
+                return reply.status(400).send({ error: "Invalid date format" });
+            }
+            const existingPolicyDateKey = valueToDateKey(existing.date);
+            if (employee.admin !== true &&
+                isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+                (isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
+                    isPreviousWeekDateForClient(requestedPolicyDateKey, timezoneOffsetMinutes))) {
+                return reply.status(403).send({
+                    error: "Previous week entries can only be edited on Monday unless you are an admin",
+                });
             }
             const targetEmployeeId = existing.employee_id;
             const [startH, startM] = startTime.split(":").map((v) => Number(v));
