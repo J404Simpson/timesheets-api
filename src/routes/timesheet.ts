@@ -36,6 +36,12 @@ function getClientCurrentDayNumber(offsetMinutes: number): number {
   return Math.floor(localMs / DAY_MS);
 }
 
+function getClientCurrentMinuteOfDay(offsetMinutes: number): number {
+  const localMs = Date.now() - offsetMinutes * 60_000;
+  const totalMinutes = Math.floor(localMs / 60_000);
+  return ((totalMinutes % 1440) + 1440) % 1440;
+}
+
 function getDayOfWeekFromDayNumber(dayNumber: number): number {
   // 1970-01-01 was Thursday (4 when Sunday=0)
   return (dayNumber + 4) % 7;
@@ -60,6 +66,21 @@ function isPastPreviousWeekCutoffForClient(offsetMinutes: number): boolean {
   const dow = getDayOfWeekFromDayNumber(currentDay);
   // Monday (1) is still allowed up to local midnight; Tuesday+ blocked.
   return dow !== 1;
+}
+
+function isFutureEntryForClient(
+  dateKey: string,
+  endMinutes: number,
+  offsetMinutes: number
+): boolean {
+  const entryDay = dateKeyToDayNumber(dateKey);
+  if (entryDay == null) return false;
+
+  const currentDay = getClientCurrentDayNumber(offsetMinutes);
+  if (entryDay > currentDay) return true;
+  if (entryDay < currentDay) return false;
+
+  return endMinutes > getClientCurrentMinuteOfDay(offsetMinutes);
 }
 
 const isLeaveEntryRecord = (entry: { project_id?: number | null; notes?: string | null }) => {
@@ -470,6 +491,12 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "endTime must be after startTime" });
       }
 
+      if (isFutureEntryForClient(policyDateKey, endMinutes, timezoneOffsetMinutes)) {
+        return reply.status(403).send({
+          error: "Entries cannot be created beyond the current date/time",
+        });
+      }
+
       const entryDate = new Date(`${date}T00:00:00.000Z`);
       if (Number.isNaN(entryDate.getTime())) {
         return reply.status(400).send({ error: "Invalid date format" });
@@ -641,6 +668,12 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       const endMinutes = endH * 60 + endM;
       if (endMinutes <= startMinutes) {
         return reply.status(400).send({ error: "endTime must be after startTime" });
+      }
+
+      if (isFutureEntryForClient(requestedPolicyDateKey, endMinutes, timezoneOffsetMinutes)) {
+        return reply.status(403).send({
+          error: "Entries cannot be updated beyond the current date/time",
+        });
       }
 
       const entryDate = new Date(`${date}T00:00:00.000Z`);
