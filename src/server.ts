@@ -216,7 +216,12 @@ async function main() {
     await server.register(fastifyCors, {
       origin: CORS_ORIGIN,
       methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Authorization", "Content-Type"],
+      allowedHeaders: [
+        "Authorization",
+        "Content-Type",
+        "X-Timezone-Offset-Minutes",
+        "X-TZ-Offset-Minutes",
+      ],
     });
   } catch (err) {
     // Could not register CORS, continuing without it
