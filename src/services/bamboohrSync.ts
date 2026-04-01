@@ -326,6 +326,18 @@ export async function runBambooLeaveSync(
   const daysUntilEndOfWeek = (7 - nowUTCDay) % 7; // 0 when today is already Sunday
   const windowEnd = toDateKey(addDays(now, Math.max(daysUntilEndOfWeek, Math.max(0, LOOKAHEAD_DAYS))));
 
+  logger?.info(
+    {
+      bambooSyncStart: {
+        windowStart,
+        windowEnd,
+        lookbackDays: LOOKBACK_DAYS,
+        lookaheadDays: LOOKAHEAD_DAYS,
+      },
+    },
+    "BambooHR leave sync started"
+  );
+
   const summary: BambooSyncResult = {
     enabled: config.enabled,
     windowStart,
@@ -604,6 +616,7 @@ export function startBambooLeaveScheduler(
 
   const run = async () => {
     try {
+      logger?.info("BambooHR scheduler trigger fired");
       await runBambooLeaveSync(prisma, logger);
     } catch {
       logger?.error("BambooHR leave sync failed");
