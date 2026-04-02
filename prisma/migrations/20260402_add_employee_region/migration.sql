@@ -1,0 +1,2 @@
+ALTER TABLE "employee"
+ADD COLUMN IF NOT EXISTS "region" VARCHAR(100);

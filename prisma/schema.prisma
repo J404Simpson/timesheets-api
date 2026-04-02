@@ -17,6 +17,7 @@ model employee {
   created_at    DateTime?   @default(now()) @db.Timestamp(6)
   updated_at    DateTime?   @default(now()) @db.Timestamp(6)
   admin         Boolean?    @default(false)
+  region        String?     @db.VarChar(100)
   department_id Int?
   department    department? @relation(fields: [department_id], references: [id], map: "fk_employee_department")
   entries       entry[]
