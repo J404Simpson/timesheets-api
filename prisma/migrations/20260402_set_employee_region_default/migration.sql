@@ -1,0 +1,2 @@
+ALTER TABLE "employee"
+ALTER COLUMN "region" SET DEFAULT '1';
