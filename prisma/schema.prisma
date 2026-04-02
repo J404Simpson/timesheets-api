@@ -17,8 +17,9 @@ model employee {
   created_at    DateTime?   @default(now()) @db.Timestamp(6)
   updated_at    DateTime?   @default(now()) @db.Timestamp(6)
   admin         Boolean?    @default(false)
-  region        String?     @default("1") @db.VarChar(100)
+  region_id     Int?        @default(1)
   department_id Int?
+  region        region?     @relation(fields: [region_id], references: [id], map: "fk_employee_region")
   department    department? @relation(fields: [department_id], references: [id], map: "fk_employee_department")
   entries       entry[]
 
@@ -92,6 +93,39 @@ model department {
   department_tasks department_task[]
 
   @@map("department")
+}
+
+model region {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique @db.VarChar(100)
+  employees    employee[]
+  region_years region_year[]
+
+  @@map("region")
+}
+
+model region_year {
+  id              Int              @id @default(autoincrement())
+  region_id       Int
+  year            Int
+  region          region           @relation(fields: [region_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_region_year_region")
+  public_holidays public_holiday[]
+
+  @@unique([region_id, year])
+  @@map("region_year")
+}
+
+model public_holiday {
+  id             Int         @id @default(autoincrement())
+  region_year_id Int
+  month          Int
+  day            Int
+  name           String?     @db.VarChar(255)
+  created_at     DateTime?   @default(now()) @db.Timestamp(6)
+  region_year    region_year @relation(fields: [region_year_id], references: [id], onDelete: Cascade, onUpdate: NoAction, map: "fk_public_holiday_region_year")
+
+  @@unique([region_year_id, month, day])
+  @@map("public_holiday")
 }
 
 
