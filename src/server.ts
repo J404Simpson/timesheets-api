@@ -5,6 +5,7 @@ import timesheetRoutes from "./routes/timesheet";
 import { DefaultAzureCredential } from "@azure/identity";
 import { SecretClient } from "@azure/keyvault-secrets";
 import { startBambooLeaveScheduler } from "./services/bamboohrSync";
+import { startHolidayYearEndScheduler } from "./services/holidaySync";
 
 dotenv.config();
 
@@ -265,8 +266,10 @@ async function main() {
   server.register(timesheetRoutes, { prefix: "/api" });
 
   const stopBambooScheduler = startBambooLeaveScheduler(prisma, server.log);
+  const stopHolidayScheduler = startHolidayYearEndScheduler(prisma, server.log);
   server.addHook("onClose", async () => {
     stopBambooScheduler();
+    stopHolidayScheduler();
   });
 
   // Start the server

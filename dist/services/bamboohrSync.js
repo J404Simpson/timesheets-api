@@ -1,13 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isBambooSyncConfigured = isBambooSyncConfigured;
+exports.getEmployeeDirectoryEnrichment = getEmployeeDirectoryEnrichment;
+exports.hydrateEmployeeBambooIds = hydrateEmployeeBambooIds;
+exports.backfillBambooEmployeeIds = backfillBambooEmployeeIds;
 exports.runBambooLeaveSync = runBambooLeaveSync;
 exports.startBambooLeaveScheduler = startBambooLeaveScheduler;
-const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
+const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 2);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
 const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
+const FRIDAY_HOURS_PER_DAY = Number(process.env.BAMBOOHR_FRIDAY_HOURS_PER_DAY ?? 7);
 const CANCEL_LOOKBACK_DAYS = Number(process.env.BAMBOOHR_CANCEL_LOOKBACK_DAYS ?? 90);
 function getConfig() {
     const subdomain = process.env.BAMBOOHR_SUBDOMAIN?.trim() ?? "";
@@ -16,6 +20,13 @@ function getConfig() {
         subdomain.length > 0 &&
         apiKey.length > 0;
     return { enabled, subdomain, apiKey };
+}
+function getRequiredConfig() {
+    const { subdomain, apiKey } = getConfig();
+    if (!subdomain || !apiKey) {
+        throw new Error("BambooHR configuration missing. Set BAMBOOHR_SUBDOMAIN and BAMBOOHR_API_KEY before running this sync or backfill.");
+    }
+    return { subdomain, apiKey };
 }
 function isBambooSyncConfigured() {
     return getConfig().enabled;
@@ -44,6 +55,25 @@ function parseHours(value) {
     }
     return null;
 }
+function normalizeEmail(value) {
+    if (typeof value !== "string")
+        return null;
+    const normalized = value.trim().toLowerCase();
+    return normalized.includes("@") ? normalized : null;
+}
+function normalizeLookupValue(value) {
+    if (typeof value !== "string")
+        return null;
+    const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
+    return normalized.length > 0 ? normalized : null;
+}
+function extractBambooEmployeeId(request) {
+    const raw = request.employeeId ?? request.employee_id ?? request.employee?.id;
+    if (raw === null || raw === undefined)
+        return null;
+    const normalized = String(raw).trim();
+    return normalized.length > 0 ? normalized : null;
+}
 function extractEmail(request) {
     const directCandidates = [
         request.employeeEmail,
@@ -52,9 +82,9 @@ function extractEmail(request) {
         request.employeeWorkEmail,
     ];
     for (const candidate of directCandidates) {
-        if (typeof candidate === "string" && candidate.includes("@")) {
-            return candidate.trim().toLowerCase();
-        }
+        const normalized = normalizeEmail(candidate);
+        if (normalized)
+            return normalized;
     }
     const employee = request.employee;
     if (employee && typeof employee === "object") {
@@ -64,9 +94,9 @@ function extractEmail(request) {
             employee.employeeEmail,
         ];
         for (const candidate of nestedCandidates) {
-            if (typeof candidate === "string" && candidate.includes("@")) {
-                return candidate.trim().toLowerCase();
-            }
+            const normalized = normalizeEmail(candidate);
+            if (normalized)
+                return normalized;
         }
     }
     return null;
@@ -98,6 +128,9 @@ function addDays(date, days) {
     copy.setUTCDate(copy.getUTCDate() + days);
     return copy;
 }
+function isFriday(dateKey) {
+    return new Date(`${dateKey}T00:00:00.000Z`).getUTCDay() === 5;
+}
 function expandDateRange(start, end) {
     const out = [];
     let current = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
@@ -112,18 +145,30 @@ function splitRequestIntoDailyHours(request) {
     const amountUnit = typeof request.amount === "object" && request.amount !== null
         ? String(request.amount.unit ?? "hours").toLowerCase()
         : "hours";
-    const toHours = (raw) => {
+    const toHours = (raw, dateKey) => {
         const h = parseHours(raw);
         if (h === null)
             return null;
-        return amountUnit === "days" ? Number((h * HOURS_PER_DAY).toFixed(2)) : h;
+        if (amountUnit === "days") {
+            const normalHours = Number((h * HOURS_PER_DAY).toFixed(2));
+            if (dateKey && isFriday(dateKey) && normalHours === HOURS_PER_DAY) {
+                return FRIDAY_HOURS_PER_DAY;
+            }
+            return normalHours;
+        }
+        // For hours unit, still apply Friday cap if value equals a full working day
+        if (dateKey && isFriday(dateKey) && h === HOURS_PER_DAY) {
+            return FRIDAY_HOURS_PER_DAY;
+        }
+        return h;
     };
     const explicitDaily = request.days ?? request.dailyAmounts ?? request.dates;
     if (Array.isArray(explicitDaily)) {
         const mapped = explicitDaily
             .map((d) => {
             const date = parseDate(d.date ?? d.day ?? d.requestDate);
-            const hours = toHours(d.hours ?? d.amount ?? d.duration);
+            const dk = date ? toDateKey(date) : undefined;
+            const hours = toHours(d.hours ?? d.amount ?? d.duration, dk);
             if (!date || !hours)
                 return null;
             return { dateKey: toDateKey(date), hours };
@@ -137,7 +182,7 @@ function splitRequestIntoDailyHours(request) {
         const mapped = Object.entries(explicitDaily)
             .map(([dateStr, amount]) => {
             const date = parseDate(dateStr);
-            const hours = toHours(amount);
+            const hours = toHours(amount, dateStr);
             if (!date || !hours)
                 return null;
             return { dateKey: toDateKey(date), hours };
@@ -159,10 +204,15 @@ function splitRequestIntoDailyHours(request) {
     if (dateKeys.length === 0)
         return [];
     const hoursPerDay = Number((totalHours / dateKeys.length).toFixed(2));
-    return dateKeys.map((dateKey) => ({ dateKey, hours: hoursPerDay }));
+    return dateKeys.map((dateKey) => ({
+        dateKey,
+        hours: (amountUnit === "days" && isFriday(dateKey) && hoursPerDay === HOURS_PER_DAY)
+            ? FRIDAY_HOURS_PER_DAY
+            : hoursPerDay,
+    }));
 }
 async function fetchBambooRequests(windowStart, windowEnd, status = "approved") {
-    const { subdomain, apiKey } = getConfig();
+    const { subdomain, apiKey } = getRequiredConfig();
     const url = new URL(`https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`);
     const auth = Buffer.from(`${apiKey}:x`).toString("base64");
     url.searchParams.set("start", windowStart);
@@ -196,7 +246,7 @@ async function fetchBambooRequests(windowStart, windowEnd, status = "approved") 
     }
 }
 async function fetchBambooEmployeeDirectory() {
-    const { subdomain, apiKey } = getConfig();
+    const { subdomain, apiKey } = getRequiredConfig();
     const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/employees/directory`;
     const auth = Buffer.from(`${apiKey}:x`).toString("base64");
     try {
@@ -212,21 +262,125 @@ async function fetchBambooEmployeeDirectory() {
         }
         const data = await response.json();
         const employees = data?.employees ?? [];
-        const map = new Map();
+        const directoryEmployees = [];
         for (const emp of employees) {
-            const id = String(emp.id ?? "").trim();
-            const email = (emp.workEmail ?? emp.email ?? "").trim().toLowerCase();
-            if (id && email) {
-                map.set(id, email);
+            const bamboohrId = Number(emp.id);
+            const email = normalizeEmail(emp.workEmail ?? emp.email);
+            const location = typeof emp.location === "string" && emp.location.trim().length > 0
+                ? emp.location.trim()
+                : null;
+            if (Number.isInteger(bamboohrId) && bamboohrId > 0 && email) {
+                directoryEmployees.push({ bamboohrId, email, location });
             }
         }
-        return map;
+        return directoryEmployees;
     }
     catch (error) {
         throw new Error(error instanceof Error
             ? error.message
             : "BambooHR employee directory request failed");
     }
+}
+function buildBambooDirectoryEmployeeByEmailMap(directoryEmployees) {
+    const map = new Map();
+    for (const employee of directoryEmployees) {
+        if (!map.has(employee.email)) {
+            map.set(employee.email, employee);
+        }
+    }
+    return map;
+}
+async function buildRegionIdByNameMap(prisma) {
+    const regions = await prisma.region.findMany({
+        select: { id: true, name: true },
+    });
+    const map = new Map();
+    for (const region of regions) {
+        const normalizedName = normalizeLookupValue(region.name);
+        if (normalizedName && !map.has(normalizedName)) {
+            map.set(normalizedName, region.id);
+        }
+    }
+    return map;
+}
+function resolveRegionIdFromLocation(location, regionIdByName) {
+    const normalizedLocation = normalizeLookupValue(location);
+    if (!normalizedLocation) {
+        return null;
+    }
+    return regionIdByName.get(normalizedLocation) ?? null;
+}
+async function getEmployeeDirectoryEnrichment(prisma, email) {
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+        return { bamboohrId: null, regionId: null, location: null };
+    }
+    const directoryEmployees = await fetchBambooEmployeeDirectory();
+    const directoryEmployee = buildBambooDirectoryEmployeeByEmailMap(directoryEmployees).get(normalizedEmail);
+    if (!directoryEmployee) {
+        return { bamboohrId: null, regionId: null, location: null };
+    }
+    const regionIdByName = await buildRegionIdByNameMap(prisma);
+    return {
+        bamboohrId: directoryEmployee.bamboohrId,
+        regionId: resolveRegionIdFromLocation(directoryEmployee.location, regionIdByName),
+        location: directoryEmployee.location,
+    };
+}
+async function hydrateEmployeeBambooIds(prisma, directoryEmployees, logger) {
+    if (directoryEmployees.length === 0) {
+        return { bambooIdsUpdated: 0, regionsUpdated: 0 };
+    }
+    const directoryEmployeeByEmail = buildBambooDirectoryEmployeeByEmailMap(directoryEmployees);
+    const regionIdByName = await buildRegionIdByNameMap(prisma);
+    const matchingEmployees = await prisma.employee.findMany({
+        where: {
+            email: { in: Array.from(directoryEmployeeByEmail.keys()) },
+        },
+        select: {
+            id: true,
+            email: true,
+            bamboohr_id: true,
+            region_id: true,
+        },
+    });
+    if (matchingEmployees.length === 0) {
+        return { bambooIdsUpdated: 0, regionsUpdated: 0 };
+    }
+    let bambooIdsUpdated = 0;
+    let regionsUpdated = 0;
+    await prisma.$transaction(matchingEmployees
+        .map((employee) => {
+        const directoryEmployee = directoryEmployeeByEmail.get(employee.email.toLowerCase());
+        if (!directoryEmployee) {
+            return null;
+        }
+        const nextBamboohrId = employee.bamboohr_id ?? directoryEmployee.bamboohrId;
+        const mappedRegionId = resolveRegionIdFromLocation(directoryEmployee.location, regionIdByName);
+        const data = {};
+        if (employee.bamboohr_id == null && nextBamboohrId) {
+            data.bamboohr_id = nextBamboohrId;
+            bambooIdsUpdated += 1;
+        }
+        if (mappedRegionId != null && employee.region_id !== mappedRegionId) {
+            data.region_id = mappedRegionId;
+            regionsUpdated += 1;
+        }
+        if (Object.keys(data).length === 0) {
+            return null;
+        }
+        return prisma.employee.update({
+            where: { id: employee.id },
+            data,
+        });
+    })
+        .filter((operation) => operation !== null));
+    logger?.info({ bambooIdsUpdated, regionsUpdated }, "Hydrated BambooHR employee data");
+    return { bambooIdsUpdated, regionsUpdated };
+}
+async function backfillBambooEmployeeIds(prisma, logger) {
+    const directoryEmployees = await fetchBambooEmployeeDirectory();
+    return hydrateEmployeeBambooIds(prisma, directoryEmployees, logger);
 }
 function makeDateOnly(value) {
     return new Date(`${value}T00:00:00.000Z`);
@@ -247,7 +401,9 @@ async function runBambooLeaveSync(prisma, logger) {
     const config = getConfig();
     const now = new Date();
     const windowStart = toDateKey(addDays(now, -Math.max(0, LOOKBACK_DAYS)));
-    const windowEnd = toDateKey(addDays(now, Math.max(0, LOOKAHEAD_DAYS)));
+    const nowUTCDay = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const daysUntilEndOfWeek = (7 - nowUTCDay) % 7; // 0 when today is already Sunday
+    const windowEnd = toDateKey(addDays(now, Math.max(daysUntilEndOfWeek, Math.max(0, LOOKAHEAD_DAYS))));
     const summary = {
         enabled: config.enabled,
         windowStart,
@@ -270,38 +426,45 @@ async function runBambooLeaveSync(prisma, logger) {
     summary.fetchedRequests = requests.length;
     const approved = requests.filter(isApprovedRequest);
     summary.approvedRequests = approved.length;
-    // Fetch BambooHR employee directory to resolve employeeId → email
-    // (time-off requests do not include email directly)
-    let bambooIdToEmail = new Map();
-    try {
-        bambooIdToEmail = await fetchBambooEmployeeDirectory();
-    }
-    catch {
-        logger?.warn("Failed to fetch BambooHR employee directory; will fall back to per-request email fields");
-    }
-    const resolveEmail = (request) => {
-        const bambooId = String(request.employeeId ?? request.employee_id ?? "").trim();
-        if (bambooId) {
-            const email = bambooIdToEmail.get(bambooId);
-            if (email)
-                return email;
-        }
-        return extractEmail(request);
-    };
+    const resolveEmail = (request) => extractEmail(request);
+    const approvedBambooIds = Array.from(new Set(approved
+        .map(extractBambooEmployeeId)
+        .filter((bambooId) => Boolean(bambooId))));
     const emails = Array.from(new Set(approved
         .map(resolveEmail)
         .filter((email) => Boolean(email))));
-    const employees = await prisma.employee.findMany({
-        where: { email: { in: emails } },
-        select: { id: true, email: true },
-    });
+    const employeeLookupWhere = [
+        emails.length > 0 ? { email: { in: emails } } : null,
+        approvedBambooIds.length > 0
+            ? { bamboohr_id: { in: approvedBambooIds.map((bamboohrId) => Number(bamboohrId)) } }
+            : null,
+    ].filter((value) => value !== null);
+    const employees = employeeLookupWhere.length > 0
+        ? await prisma.employee.findMany({
+            where: { OR: employeeLookupWhere },
+            select: { id: true, email: true, bamboohr_id: true },
+        })
+        : [];
     const employeeByEmail = new Map(employees.map((e) => [e.email.toLowerCase(), e.id]));
+    const employeeByBambooId = new Map(employees
+        .filter((employee) => employee.bamboohr_id !== null)
+        .map((employee) => [String(employee.bamboohr_id), employee.id]));
+    const resolveLocalEmployeeId = (request) => {
+        const bambooId = extractBambooEmployeeId(request);
+        if (bambooId) {
+            const employeeId = employeeByBambooId.get(bambooId);
+            if (employeeId)
+                return employeeId;
+        }
+        const email = resolveEmail(request);
+        if (!email)
+            return null;
+        return employeeByEmail.get(email) ?? null;
+    };
     const dailyMap = new Map();
     for (const request of approved) {
         const email = resolveEmail(request);
-        if (!email)
-            continue;
-        const employeeId = employeeByEmail.get(email);
+        const employeeId = resolveLocalEmployeeId(request);
         if (!employeeId) {
             summary.skippedMissingEmployee += 1;
             continue;
@@ -322,7 +485,7 @@ async function runBambooLeaveSync(prisma, logger) {
             else {
                 dailyMap.set(key, {
                     employeeId,
-                    email,
+                    email: email ?? "",
                     dateKey: item.dateKey,
                     hours: Number(item.hours.toFixed(2)),
                     requestIds: new Set([requestId]),
@@ -422,27 +585,36 @@ async function runBambooLeaveSync(prisma, logger) {
     }
     summary.canceledRequests = canceledRequests.length;
     if (canceledRequests.length > 0) {
+        const newBambooIds = Array.from(new Set(canceledRequests
+            .map(extractBambooEmployeeId)
+            .filter((bambooId) => bambooId !== null && !employeeByBambooId.has(bambooId))));
         // Resolve any employee emails from canceled requests that weren't in the
         // approved set so we can look them up in the DB.
         const newEmails = Array.from(new Set(canceledRequests
             .map(resolveEmail)
             .filter((e) => Boolean(e))
             .filter((e) => !employeeByEmail.has(e))));
-        if (newEmails.length > 0) {
+        const canceledLookupWhere = [
+            newEmails.length > 0 ? { email: { in: newEmails } } : null,
+            newBambooIds.length > 0
+                ? { bamboohr_id: { in: newBambooIds.map((bamboohrId) => Number(bamboohrId)) } }
+                : null,
+        ].filter((value) => value !== null);
+        if (canceledLookupWhere.length > 0) {
             const newEmployees = await prisma.employee.findMany({
-                where: { email: { in: newEmails } },
-                select: { id: true, email: true },
+                where: { OR: canceledLookupWhere },
+                select: { id: true, email: true, bamboohr_id: true },
             });
             for (const emp of newEmployees) {
                 employeeByEmail.set(emp.email.toLowerCase(), emp.id);
+                if (emp.bamboohr_id !== null) {
+                    employeeByBambooId.set(String(emp.bamboohr_id), emp.id);
+                }
             }
         }
         for (const request of canceledRequests) {
             const requestId = extractRequestId(request);
-            const email = resolveEmail(request);
-            if (!email)
-                continue;
-            const employeeId = employeeByEmail.get(email);
+            const employeeId = resolveLocalEmployeeId(request);
             if (!employeeId)
                 continue;
             // Fetch all BambooHR leave entries for this employee and filter in memory

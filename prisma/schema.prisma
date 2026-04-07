@@ -10,6 +10,7 @@ model employee {
   id            Int         @id(map: "employee_pkey") @default(autoincrement())
   object_id     String      @unique(map: "employee_object_id_key") @db.VarChar(255)
   email         String      @unique(map: "employee_email_key") @db.VarChar(255)
+  bamboohr_id   Int?
   first_name    String?     @db.VarChar(100)
   last_name     String?     @db.VarChar(100)
   tenant_id     String?     @db.VarChar(255)

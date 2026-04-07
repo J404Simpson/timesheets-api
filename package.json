@@ -10,6 +10,7 @@
     "dev": "nodemon --watch src --ext ts --exec \"ts-node --transpile-only src/server.ts\"",
     "build": "tsc",
     "start": "node dist/server.js",
+    "bamboohr:backfill-ids": "ts-node --transpile-only src/scripts/backfillBamboohrIds.ts",
     "prisma:generate": "npx prisma generate",
     "postinstall": "npx prisma generate"
   },

@@ -3,6 +3,23 @@ import type { PrismaClient, entry as EntryRecord } from "@prisma/client";
 
 type BambooRequest = Record<string, any>;
 
+type BambooDirectoryEmployee = {
+  bamboohrId: number;
+  email: string;
+  location: string | null;
+};
+
+export type BambooDirectoryHydrationResult = {
+  bambooIdsUpdated: number;
+  regionsUpdated: number;
+};
+
+export type EmployeeDirectoryEnrichment = {
+  bamboohrId: number | null;
+  regionId: number | null;
+  location: string | null;
+};
+
 type DailyLeave = {
   employeeId: number;
   email: string;
@@ -26,7 +43,7 @@ export type BambooSyncResult = {
   errors: string[];
 };
 
-const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
+const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 2);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
@@ -43,6 +60,18 @@ function getConfig() {
     apiKey.length > 0;
 
   return { enabled, subdomain, apiKey };
+}
+
+function getRequiredConfig(): { subdomain: string; apiKey: string } {
+  const { subdomain, apiKey } = getConfig();
+
+  if (!subdomain || !apiKey) {
+    throw new Error(
+      "BambooHR configuration missing. Set BAMBOOHR_SUBDOMAIN and BAMBOOHR_API_KEY before running this sync or backfill."
+    );
+  }
+
+  return { subdomain, apiKey };
 }
 
 export function isBambooSyncConfigured(): boolean {
@@ -73,6 +102,26 @@ function parseHours(value: unknown): number | null {
   return null;
 }
 
+function normalizeEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized.includes("@") ? normalized : null;
+}
+
+function normalizeLookupValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, " ").trim().toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function extractBambooEmployeeId(request: BambooRequest): string | null {
+  const raw = request.employeeId ?? request.employee_id ?? request.employee?.id;
+  if (raw === null || raw === undefined) return null;
+
+  const normalized = String(raw).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function extractEmail(request: BambooRequest): string | null {
   const directCandidates = [
     request.employeeEmail,
@@ -81,9 +130,8 @@ function extractEmail(request: BambooRequest): string | null {
     request.employeeWorkEmail,
   ];
   for (const candidate of directCandidates) {
-    if (typeof candidate === "string" && candidate.includes("@")) {
-      return candidate.trim().toLowerCase();
-    }
+    const normalized = normalizeEmail(candidate);
+    if (normalized) return normalized;
   }
 
   const employee = request.employee;
@@ -94,9 +142,8 @@ function extractEmail(request: BambooRequest): string | null {
       (employee as any).employeeEmail,
     ];
     for (const candidate of nestedCandidates) {
-      if (typeof candidate === "string" && candidate.includes("@")) {
-        return candidate.trim().toLowerCase();
-      }
+      const normalized = normalizeEmail(candidate);
+      if (normalized) return normalized;
     }
   }
 
@@ -225,7 +272,7 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
 }
 
 async function fetchBambooRequests(windowStart: string, windowEnd: string, status = "approved"): Promise<BambooRequest[]> {
-  const { subdomain, apiKey } = getConfig();
+  const { subdomain, apiKey } = getRequiredConfig();
   const url = new URL(`https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/time_off/requests/`);
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
   url.searchParams.set("start", windowStart);
@@ -258,8 +305,8 @@ async function fetchBambooRequests(windowStart: string, windowEnd: string, statu
   }
 }
 
-async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
-  const { subdomain, apiKey } = getConfig();
+async function fetchBambooEmployeeDirectory(): Promise<BambooDirectoryEmployee[]> {
+  const { subdomain, apiKey } = getRequiredConfig();
   const url = `https://api.bamboohr.com/api/gateway.php/${subdomain}/v1/employees/directory`;
   const auth = Buffer.from(`${apiKey}:x`).toString("base64");
 
@@ -278,15 +325,18 @@ async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
 
     const data = await response.json();
     const employees: any[] = data?.employees ?? [];
-    const map = new Map<string, string>();
+    const directoryEmployees: BambooDirectoryEmployee[] = [];
     for (const emp of employees) {
-      const id = String(emp.id ?? "").trim();
-      const email = (emp.workEmail ?? emp.email ?? "").trim().toLowerCase();
-      if (id && email) {
-        map.set(id, email);
+      const bamboohrId = Number(emp.id);
+      const email = normalizeEmail(emp.workEmail ?? emp.email);
+      const location = typeof emp.location === "string" && emp.location.trim().length > 0
+        ? emp.location.trim()
+        : null;
+      if (Number.isInteger(bamboohrId) && bamboohrId > 0 && email) {
+        directoryEmployees.push({ bamboohrId, email, location });
       }
     }
-    return map;
+    return directoryEmployees;
   } catch (error) {
     throw new Error(
       error instanceof Error
@@ -294,6 +344,154 @@ async function fetchBambooEmployeeDirectory(): Promise<Map<string, string>> {
         : "BambooHR employee directory request failed"
     );
   }
+}
+
+function buildBambooDirectoryEmployeeByEmailMap(
+  directoryEmployees: BambooDirectoryEmployee[]
+): Map<string, BambooDirectoryEmployee> {
+  const map = new Map<string, BambooDirectoryEmployee>();
+  for (const employee of directoryEmployees) {
+    if (!map.has(employee.email)) {
+      map.set(employee.email, employee);
+    }
+  }
+  return map;
+}
+
+async function buildRegionIdByNameMap(prisma: PrismaClient): Promise<Map<string, number>> {
+  const regions = await prisma.region.findMany({
+    select: { id: true, name: true },
+  });
+
+  const map = new Map<string, number>();
+  for (const region of regions) {
+    const normalizedName = normalizeLookupValue(region.name);
+    if (normalizedName && !map.has(normalizedName)) {
+      map.set(normalizedName, region.id);
+    }
+  }
+
+  return map;
+}
+
+function resolveRegionIdFromLocation(
+  location: string | null,
+  regionIdByName: Map<string, number>
+): number | null {
+  const normalizedLocation = normalizeLookupValue(location);
+  if (!normalizedLocation) {
+    return null;
+  }
+
+  return regionIdByName.get(normalizedLocation) ?? null;
+}
+
+export async function getEmployeeDirectoryEnrichment(
+  prisma: PrismaClient,
+  email: string
+): Promise<EmployeeDirectoryEnrichment> {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) {
+    return { bamboohrId: null, regionId: null, location: null };
+  }
+
+  const directoryEmployees = await fetchBambooEmployeeDirectory();
+  const directoryEmployee = buildBambooDirectoryEmployeeByEmailMap(directoryEmployees).get(normalizedEmail);
+  if (!directoryEmployee) {
+    return { bamboohrId: null, regionId: null, location: null };
+  }
+
+  const regionIdByName = await buildRegionIdByNameMap(prisma);
+  return {
+    bamboohrId: directoryEmployee.bamboohrId,
+    regionId: resolveRegionIdFromLocation(directoryEmployee.location, regionIdByName),
+    location: directoryEmployee.location,
+  };
+}
+
+export async function hydrateEmployeeBambooIds(
+  prisma: PrismaClient,
+  directoryEmployees: BambooDirectoryEmployee[],
+  logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">
+): Promise<BambooDirectoryHydrationResult> {
+  if (directoryEmployees.length === 0) {
+    return { bambooIdsUpdated: 0, regionsUpdated: 0 };
+  }
+
+  const directoryEmployeeByEmail = buildBambooDirectoryEmployeeByEmailMap(directoryEmployees);
+
+  const regionIdByName = await buildRegionIdByNameMap(prisma);
+
+  const matchingEmployees = await prisma.employee.findMany({
+    where: {
+      email: { in: Array.from(directoryEmployeeByEmail.keys()) },
+    },
+    select: {
+      id: true,
+      email: true,
+      bamboohr_id: true,
+      region_id: true,
+    },
+  });
+
+  if (matchingEmployees.length === 0) {
+    return { bambooIdsUpdated: 0, regionsUpdated: 0 };
+  }
+
+  let bambooIdsUpdated = 0;
+  let regionsUpdated = 0;
+
+  await prisma.$transaction(
+    matchingEmployees
+      .map((employee) => {
+        const directoryEmployee = directoryEmployeeByEmail.get(employee.email.toLowerCase());
+        if (!directoryEmployee) {
+          return null;
+        }
+
+        const nextBamboohrId = employee.bamboohr_id ?? directoryEmployee.bamboohrId;
+        const mappedRegionId = resolveRegionIdFromLocation(
+          directoryEmployee.location,
+          regionIdByName
+        );
+
+        const data: { bamboohr_id?: number; region_id?: number } = {};
+        if (employee.bamboohr_id == null && nextBamboohrId) {
+          data.bamboohr_id = nextBamboohrId;
+          bambooIdsUpdated += 1;
+        }
+
+        if (mappedRegionId != null && employee.region_id !== mappedRegionId) {
+          data.region_id = mappedRegionId;
+          regionsUpdated += 1;
+        }
+
+        if (Object.keys(data).length === 0) {
+          return null;
+        }
+
+        return prisma.employee.update({
+          where: { id: employee.id },
+          data,
+        });
+      })
+      .filter((operation): operation is ReturnType<typeof prisma.employee.update> => operation !== null)
+  );
+
+  logger?.info(
+    { bambooIdsUpdated, regionsUpdated },
+    "Hydrated BambooHR employee data"
+  );
+
+  return { bambooIdsUpdated, regionsUpdated };
+}
+
+export async function backfillBambooEmployeeIds(
+  prisma: PrismaClient,
+  logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">
+): Promise<BambooDirectoryHydrationResult> {
+  const directoryEmployees = await fetchBambooEmployeeDirectory();
+  return hydrateEmployeeBambooIds(prisma, directoryEmployees, logger);
 }
 
 function makeDateOnly(value: string): Date {
@@ -326,17 +524,6 @@ export async function runBambooLeaveSync(
   const daysUntilEndOfWeek = (7 - nowUTCDay) % 7; // 0 when today is already Sunday
   const windowEnd = toDateKey(addDays(now, Math.max(daysUntilEndOfWeek, Math.max(0, LOOKAHEAD_DAYS))));
 
-  logger?.info(
-    {
-      bambooSyncStart: {
-        windowStart,
-        windowEnd,
-        lookbackDays: LOOKBACK_DAYS,
-        lookaheadDays: LOOKAHEAD_DAYS,
-      },
-    },
-    "BambooHR leave sync started"
-  );
 
   const summary: BambooSyncResult = {
     enabled: config.enabled,
@@ -364,25 +551,15 @@ export async function runBambooLeaveSync(
   const approved = requests.filter(isApprovedRequest);
   summary.approvedRequests = approved.length;
 
-  // Fetch BambooHR employee directory to resolve employeeId → email
-  // (time-off requests do not include email directly)
-  let bambooIdToEmail = new Map<string, string>();
-  try {
-    bambooIdToEmail = await fetchBambooEmployeeDirectory();
-  } catch {
-    logger?.warn(
-      "Failed to fetch BambooHR employee directory; will fall back to per-request email fields"
-    );
-  }
+  const resolveEmail = (request: BambooRequest): string | null => extractEmail(request);
 
-  const resolveEmail = (request: BambooRequest): string | null => {
-    const bambooId = String(request.employeeId ?? request.employee_id ?? "").trim();
-    if (bambooId) {
-      const email = bambooIdToEmail.get(bambooId);
-      if (email) return email;
-    }
-    return extractEmail(request);
-  };
+  const approvedBambooIds = Array.from(
+    new Set(
+      approved
+        .map(extractBambooEmployeeId)
+        .filter((bambooId): bambooId is string => Boolean(bambooId))
+    )
+  );
 
   const emails = Array.from(
     new Set(
@@ -392,19 +569,44 @@ export async function runBambooLeaveSync(
     )
   );
 
-  const employees = await prisma.employee.findMany({
-    where: { email: { in: emails } },
-    select: { id: true, email: true },
-  });
+  const employeeLookupWhere = [
+    emails.length > 0 ? { email: { in: emails } } : null,
+    approvedBambooIds.length > 0
+      ? { bamboohr_id: { in: approvedBambooIds.map((bamboohrId) => Number(bamboohrId)) } }
+      : null,
+  ].filter((value): value is NonNullable<typeof value> => value !== null);
+
+  const employees = employeeLookupWhere.length > 0
+    ? await prisma.employee.findMany({
+        where: { OR: employeeLookupWhere },
+        select: { id: true, email: true, bamboohr_id: true },
+      })
+    : [];
 
   const employeeByEmail = new Map(employees.map((e) => [e.email.toLowerCase(), e.id]));
+  const employeeByBambooId = new Map(
+    employees
+      .filter((employee) => employee.bamboohr_id !== null)
+      .map((employee) => [String(employee.bamboohr_id), employee.id])
+  );
+
+  const resolveLocalEmployeeId = (request: BambooRequest): number | null => {
+    const bambooId = extractBambooEmployeeId(request);
+    if (bambooId) {
+      const employeeId = employeeByBambooId.get(bambooId);
+      if (employeeId) return employeeId;
+    }
+
+    const email = resolveEmail(request);
+    if (!email) return null;
+    return employeeByEmail.get(email) ?? null;
+  };
+
   const dailyMap = new Map<string, DailyLeave>();
 
   for (const request of approved) {
     const email = resolveEmail(request);
-    if (!email) continue;
-
-    const employeeId = employeeByEmail.get(email);
+    const employeeId = resolveLocalEmployeeId(request);
     if (!employeeId) {
       summary.skippedMissingEmployee += 1;
       continue;
@@ -425,7 +627,7 @@ export async function runBambooLeaveSync(
       } else {
         dailyMap.set(key, {
           employeeId,
-          email,
+          email: email ?? "",
           dateKey: item.dateKey,
           hours: Number(item.hours.toFixed(2)),
           requestIds: new Set([requestId]),
@@ -541,6 +743,17 @@ export async function runBambooLeaveSync(
   summary.canceledRequests = canceledRequests.length;
 
   if (canceledRequests.length > 0) {
+    const newBambooIds = Array.from(
+      new Set(
+        canceledRequests
+          .map(extractBambooEmployeeId)
+          .filter(
+            (bambooId): bambooId is string =>
+              bambooId !== null && !employeeByBambooId.has(bambooId)
+          )
+      )
+    );
+
     // Resolve any employee emails from canceled requests that weren't in the
     // approved set so we can look them up in the DB.
     const newEmails = Array.from(
@@ -551,21 +764,30 @@ export async function runBambooLeaveSync(
           .filter((e) => !employeeByEmail.has(e))
       )
     );
-    if (newEmails.length > 0) {
+
+    const canceledLookupWhere = [
+      newEmails.length > 0 ? { email: { in: newEmails } } : null,
+      newBambooIds.length > 0
+        ? { bamboohr_id: { in: newBambooIds.map((bamboohrId) => Number(bamboohrId)) } }
+        : null,
+    ].filter((value): value is NonNullable<typeof value> => value !== null);
+
+    if (canceledLookupWhere.length > 0) {
       const newEmployees = await prisma.employee.findMany({
-        where: { email: { in: newEmails } },
-        select: { id: true, email: true },
+        where: { OR: canceledLookupWhere },
+        select: { id: true, email: true, bamboohr_id: true },
       });
       for (const emp of newEmployees) {
         employeeByEmail.set(emp.email.toLowerCase(), emp.id);
+        if (emp.bamboohr_id !== null) {
+          employeeByBambooId.set(String(emp.bamboohr_id), emp.id);
+        }
       }
     }
 
     for (const request of canceledRequests) {
       const requestId = extractRequestId(request);
-      const email = resolveEmail(request);
-      if (!email) continue;
-      const employeeId = employeeByEmail.get(email);
+      const employeeId = resolveLocalEmployeeId(request);
       if (!employeeId) continue;
 
       // Fetch all BambooHR leave entries for this employee and filter in memory
@@ -616,7 +838,6 @@ export function startBambooLeaveScheduler(
 
   const run = async () => {
     try {
-      logger?.info("BambooHR scheduler trigger fired");
       await runBambooLeaveSync(prisma, logger);
     } catch {
       logger?.error("BambooHR leave sync failed");

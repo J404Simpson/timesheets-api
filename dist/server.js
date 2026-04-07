@@ -43,6 +43,7 @@ const timesheet_1 = __importDefault(require("./routes/timesheet"));
 const identity_1 = require("@azure/identity");
 const keyvault_secrets_1 = require("@azure/keyvault-secrets");
 const bamboohrSync_1 = require("./services/bamboohrSync");
+const holidaySync_1 = require("./services/holidaySync");
 dotenv_1.default.config();
 const PORT = Number(process.env.PORT ?? 5000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "http://localhost:5173";
@@ -256,8 +257,10 @@ async function main() {
     // Register application routes
     server.register(timesheet_1.default, { prefix: "/api" });
     const stopBambooScheduler = (0, bamboohrSync_1.startBambooLeaveScheduler)(prisma, server.log);
+    const stopHolidayScheduler = (0, holidaySync_1.startHolidayYearEndScheduler)(prisma, server.log);
     server.addHook("onClose", async () => {
         stopBambooScheduler();
+        stopHolidayScheduler();
     });
     // Start the server
     try {

@@ -1,0 +1,2 @@
+ALTER TABLE "employee"
+ADD COLUMN IF NOT EXISTS "bamboohr_id" INTEGER;

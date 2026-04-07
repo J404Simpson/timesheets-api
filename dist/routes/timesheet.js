@@ -5,9 +5,49 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.default = timesheetRoutes;
 const prismaClient_1 = __importDefault(require("../prismaClient"));
-const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 1);
+const bamboohrSync_1 = require("../services/bamboohrSync");
+const holidaySync_1 = require("../services/holidaySync");
+const HOLIDAY_PROJECT_ID = Number(process.env.HOLIDAY_PROJECT_ID ?? 1);
+const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 2);
+const PROTECTED_PROJECT_IDS = new Set([HOLIDAY_PROJECT_ID, LEAVE_PROJECT_ID]);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
+const FULL_DAY_START_TIME = new Date("1970-01-01T09:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1000;
+function toDateKeyLocalDate(date) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+}
+function getFullDayHoursForDateKey(dateKey) {
+    const dow = new Date(`${dateKey}T00:00:00.000Z`).getUTCDay();
+    return dow === 5 ? 7 : 8;
+}
+function endTimeFromHourDecimal(hourValue) {
+    const ms = Math.max(0, hourValue) * 60 * 60 * 1000;
+    return new Date(FULL_DAY_START_TIME.getTime() + ms);
+}
+async function findRegionHolidayForDate(regionId, dateKey) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+    if (!match)
+        return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    return prismaClient_1.default.public_holiday.findFirst({
+        where: {
+            month,
+            day,
+            region_year: {
+                region_id: regionId,
+                year,
+            },
+        },
+        select: {
+            name: true,
+        },
+    });
+}
 function getClientTimezoneOffsetMinutes(request) {
     const raw = (request.headers["x-timezone-offset-minutes"] ??
         request.headers["x-tz-offset-minutes"]);
@@ -36,6 +76,11 @@ function getClientCurrentDayNumber(offsetMinutes) {
     const localMs = Date.now() - offsetMinutes * 60000;
     return Math.floor(localMs / DAY_MS);
 }
+function getClientCurrentMinuteOfDay(offsetMinutes) {
+    const localMs = Date.now() - offsetMinutes * 60000;
+    const totalMinutes = Math.floor(localMs / 60000);
+    return ((totalMinutes % 1440) + 1440) % 1440;
+}
 function getDayOfWeekFromDayNumber(dayNumber) {
     // 1970-01-01 was Thursday (4 when Sunday=0)
     return (dayNumber + 4) % 7;
@@ -58,6 +103,22 @@ function isPastPreviousWeekCutoffForClient(offsetMinutes) {
     // Monday (1) is still allowed up to local midnight; Tuesday+ blocked.
     return dow !== 1;
 }
+function isFutureEntryForClient(dateKey, endMinutes, offsetMinutes) {
+    const entryDay = dateKeyToDayNumber(dateKey);
+    if (entryDay == null)
+        return false;
+    const currentDay = getClientCurrentDayNumber(offsetMinutes);
+    if (entryDay > currentDay)
+        return true;
+    if (entryDay < currentDay)
+        return false;
+    return endMinutes > getClientCurrentMinuteOfDay(offsetMinutes);
+}
+const isProtectedAbsenceEntryRecord = (entry) => {
+    if (entry.project_id != null && PROTECTED_PROJECT_IDS.has(entry.project_id))
+        return true;
+    return (entry.notes ?? "").startsWith(LEAVE_NOTE_PREFIX);
+};
 const isLeaveEntryRecord = (entry) => {
     if (entry.project_id != null && entry.project_id === LEAVE_PROJECT_ID)
         return true;
@@ -144,7 +205,7 @@ async function timesheetRoutes(fastify, opts) {
             // Get requesting employee by object_id
             const requestingEmployee = await prismaClient_1.default.employee.findUnique({
                 where: { object_id },
-                select: { id: true, admin: true },
+                select: { id: true, admin: true, region_id: true },
             });
             if (!requestingEmployee) {
                 return reply.status(404).send({ error: "Employee not found" });
@@ -153,18 +214,20 @@ async function timesheetRoutes(fastify, opts) {
             const { employeeId } = request.query;
             const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
             let targetEmployeeId = requestingEmployee.id;
+            let targetEmployeeRegionId = requestingEmployee.region_id ?? 1;
             if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
                 if (requestedEmployeeId !== requestingEmployee.id && requestingEmployee.admin !== true) {
                     return reply.status(403).send({ error: "Admin access required" });
                 }
                 const targetEmployee = await prismaClient_1.default.employee.findUnique({
                     where: { id: requestedEmployeeId },
-                    select: { id: true },
+                    select: { id: true, region_id: true },
                 });
                 if (!targetEmployee) {
                     return reply.status(404).send({ error: "Target employee not found" });
                 }
                 targetEmployeeId = targetEmployee.id;
+                targetEmployeeRegionId = targetEmployee.region_id ?? 1;
             }
             // Optional weekOf param (YYYY-MM-DD) — defaults to today
             const { weekOf } = request.query;
@@ -199,7 +262,74 @@ async function timesheetRoutes(fastify, opts) {
                 },
                 orderBy: [{ date: "asc" }, { start_time: "asc" }],
             });
-            reply.status(200).send({ entries });
+            const weekDays = Array.from({ length: 7 }, (_, i) => {
+                const day = new Date(monday);
+                day.setDate(monday.getDate() + i);
+                return day;
+            });
+            const weekDateKeys = weekDays.map(toDateKeyLocalDate);
+            const years = Array.from(new Set(weekDays.map((day) => day.getFullYear())));
+            const holidays = await prismaClient_1.default.public_holiday.findMany({
+                where: {
+                    region_year: {
+                        region_id: targetEmployeeRegionId,
+                        year: { in: years },
+                    },
+                    OR: weekDays.map((day) => ({
+                        month: day.getMonth() + 1,
+                        day: day.getDate(),
+                    })),
+                },
+                select: {
+                    month: true,
+                    day: true,
+                    name: true,
+                    region_year: { select: { year: true } },
+                },
+            });
+            const holidayByDateKey = new Map();
+            for (const holiday of holidays) {
+                const holidayDateKey = `${holiday.region_year.year}-${String(holiday.month).padStart(2, "0")}-${String(holiday.day).padStart(2, "0")}`;
+                holidayByDateKey.set(holidayDateKey, { name: holiday.name ?? null });
+            }
+            const syntheticHolidayEntries = weekDateKeys
+                .map((dateKey, index) => {
+                const holiday = holidayByDateKey.get(dateKey);
+                if (!holiday)
+                    return null;
+                const hasProtectedAbsenceAlready = entries.some((entry) => {
+                    return valueToDateKey(entry.date) === dateKey &&
+                        isProtectedAbsenceEntryRecord({ project_id: entry.project_id, notes: entry.notes });
+                });
+                if (hasProtectedAbsenceAlready)
+                    return null;
+                const hours = getFullDayHoursForDateKey(dateKey);
+                return {
+                    id: -(100000 + index),
+                    employee_id: targetEmployeeId,
+                    project_id: HOLIDAY_PROJECT_ID,
+                    task_id: null,
+                    project_phase_id: null,
+                    date: `${dateKey}T00:00:00.000Z`,
+                    type: false,
+                    start_time: FULL_DAY_START_TIME.toISOString(),
+                    end_time: endTimeFromHourDecimal(hours).toISOString(),
+                    hours,
+                    notes: holiday.name ?? "Holiday",
+                    project: { id: HOLIDAY_PROJECT_ID, name: "Holiday" },
+                    task: null,
+                    project_phase: null,
+                    created_at: null,
+                };
+            })
+                .filter((entry) => entry !== null);
+            const allEntries = [...entries, ...syntheticHolidayEntries].sort((a, b) => {
+                const byDate = valueToDateKey(a.date).localeCompare(valueToDateKey(b.date));
+                if (byDate !== 0)
+                    return byDate;
+                return String(a.start_time).localeCompare(String(b.start_time));
+            });
+            reply.status(200).send({ entries: allEntries });
         }
         catch (err) {
             fastify.log.error(err);
@@ -252,6 +382,20 @@ async function timesheetRoutes(fastify, opts) {
                 reply.status(409).send({ error: "Employee already exists" });
                 return;
             }
+            let bamboohr_id;
+            let region_id;
+            try {
+                const enrichment = await (0, bamboohrSync_1.getEmployeeDirectoryEnrichment)(prismaClient_1.default, email);
+                if (enrichment.bamboohrId != null) {
+                    bamboohr_id = enrichment.bamboohrId;
+                }
+                if (enrichment.regionId != null) {
+                    region_id = enrichment.regionId;
+                }
+            }
+            catch (err) {
+                fastify.log.warn({ err, email }, "Failed to enrich employee from BambooHR directory during create");
+            }
             const employee = await prismaClient_1.default.employee.create({
                 data: {
                     object_id,
@@ -259,8 +403,16 @@ async function timesheetRoutes(fastify, opts) {
                     last_name: lastName,
                     email,
                     department_id,
+                    ...(bamboohr_id != null ? { bamboohr_id } : {}),
+                    ...(region_id != null ? { region_id } : {}),
                 },
             });
+            try {
+                await (0, holidaySync_1.syncHolidayEntriesForEmployee)(prismaClient_1.default, employee.id, fastify.log);
+            }
+            catch (syncErr) {
+                fastify.log.warn({ syncErr, employeeId: employee.id }, "Failed to sync holiday entries for new employee");
+            }
             reply.status(201).send({ employee });
         }
         catch (err) {
@@ -401,6 +553,11 @@ async function timesheetRoutes(fastify, opts) {
             if (endMinutes <= startMinutes) {
                 return reply.status(400).send({ error: "endTime must be after startTime" });
             }
+            if (isFutureEntryForClient(policyDateKey, endMinutes, timezoneOffsetMinutes)) {
+                return reply.status(403).send({
+                    error: "Entries cannot be created beyond the current date/time",
+                });
+            }
             const entryDate = new Date(`${date}T00:00:00.000Z`);
             if (Number.isNaN(entryDate.getTime())) {
                 return reply.status(400).send({ error: "Invalid date format" });
@@ -408,7 +565,16 @@ async function timesheetRoutes(fastify, opts) {
             const startDateTime = new Date(Date.UTC(1970, 0, 1, startH, startM, 0, 0));
             const endDateTime = new Date(Date.UTC(1970, 0, 1, endH, endM, 0, 0));
             const computedHours = Number((((endMinutes - startMinutes) / 60)).toFixed(2));
-            const isLeaveRequest = Number(projectId) === LEAVE_PROJECT_ID;
+            const projectIdNumber = Number(projectId);
+            const isProtectedAbsenceRequest = PROTECTED_PROJECT_IDS.has(projectIdNumber);
+            const isLeaveRequest = projectIdNumber === LEAVE_PROJECT_ID;
+            const isHolidayRequest = projectIdNumber === HOLIDAY_PROJECT_ID;
+            const regionHoliday = await findRegionHolidayForDate(employee.region_id ?? 1, policyDateKey);
+            if (!isProtectedAbsenceRequest && regionHoliday) {
+                return reply.status(409).send({
+                    error: "Cannot create entry that overlaps approved leave/holiday",
+                });
+            }
             const overlapping = await prismaClient_1.default.entry.findMany({
                 where: {
                     employee_id: employee.id,
@@ -419,15 +585,26 @@ async function timesheetRoutes(fastify, opts) {
                 select: { id: true, project_id: true, notes: true },
             });
             if (overlapping.length > 0) {
+                const hasProtectedAbsenceOverlap = overlapping.some((entry) => isProtectedAbsenceEntryRecord(entry));
                 const hasLeaveOverlap = overlapping.some((entry) => isLeaveEntryRecord(entry));
                 if (isLeaveRequest) {
                     await prismaClient_1.default.entry.deleteMany({
                         where: { id: { in: overlapping.map((entry) => entry.id) } },
                     });
                 }
-                else if (hasLeaveOverlap) {
+                else if (isHolidayRequest) {
+                    if (hasLeaveOverlap) {
+                        return reply.status(409).send({
+                            error: "Cannot create holiday entry that overlaps approved leave",
+                        });
+                    }
+                    await prismaClient_1.default.entry.deleteMany({
+                        where: { id: { in: overlapping.map((entry) => entry.id) } },
+                    });
+                }
+                else if (hasProtectedAbsenceOverlap) {
                     return reply.status(409).send({
-                        error: "Cannot create entry that overlaps approved leave",
+                        error: "Cannot create entry that overlaps approved leave/holiday",
                     });
                 }
                 else {
@@ -436,11 +613,16 @@ async function timesheetRoutes(fastify, opts) {
                     });
                 }
             }
+            let normalizedTaskId = taskId != null ? Number(taskId) : null;
+            let normalizedStartDateTime = startDateTime;
+            let normalizedEndDateTime = endDateTime;
+            let normalizedHours = hours != null ? Number(hours) : computedHours;
+            let normalizedNotes = notes ?? null;
             let projectPhaseId = null;
-            if (phaseId != null) {
+            if (!isProtectedAbsenceRequest && phaseId != null) {
                 const projectPhase = await prismaClient_1.default.project_phase.findFirst({
                     where: {
-                        project_id: Number(projectId),
+                        project_id: projectIdNumber,
                         phase_id: Number(phaseId),
                     },
                     select: { id: true },
@@ -450,17 +632,31 @@ async function timesheetRoutes(fastify, opts) {
                 }
                 projectPhaseId = projectPhase.id;
             }
+            if (isProtectedAbsenceRequest) {
+                normalizedTaskId = null;
+                projectPhaseId = null;
+            }
+            if (projectIdNumber === HOLIDAY_PROJECT_ID) {
+                if (!regionHoliday) {
+                    return reply.status(400).send({ error: "Selected date is not a configured regional public holiday" });
+                }
+                const holidayHours = getFullDayHoursForDateKey(policyDateKey);
+                normalizedStartDateTime = FULL_DAY_START_TIME;
+                normalizedEndDateTime = endTimeFromHourDecimal(holidayHours);
+                normalizedHours = holidayHours;
+                normalizedNotes = regionHoliday.name ?? "Holiday";
+            }
             const created = await prismaClient_1.default.entry.create({
                 data: {
                     employee_id: employee.id,
-                    project_id: Number(projectId),
-                    task_id: taskId != null ? Number(taskId) : null,
+                    project_id: projectIdNumber,
+                    task_id: normalizedTaskId,
                     project_phase_id: projectPhaseId,
                     date: entryDate,
-                    start_time: startDateTime,
-                    end_time: endDateTime,
-                    hours: hours != null ? Number(hours) : computedHours,
-                    notes: notes ?? null,
+                    start_time: normalizedStartDateTime,
+                    end_time: normalizedEndDateTime,
+                    hours: normalizedHours,
+                    notes: normalizedNotes,
                     type: typeof type === "boolean" ? type : false,
                 },
             });
@@ -498,8 +694,8 @@ async function timesheetRoutes(fastify, opts) {
             if (existing.employee_id !== employee.id && employee.admin !== true) {
                 return reply.status(403).send({ error: "Cannot edit other user's entries" });
             }
-            if (isLeaveEntryRecord(existing)) {
-                return reply.status(400).send({ error: "Cannot edit leave entries" });
+            if (isProtectedAbsenceEntryRecord(existing)) {
+                return reply.status(400).send({ error: "Cannot edit leave/holiday entries" });
             }
             const timezoneOffsetMinutes = getClientTimezoneOffsetMinutes(request);
             const requestedPolicyDateKey = valueToDateKey(date);
@@ -529,6 +725,11 @@ async function timesheetRoutes(fastify, opts) {
             if (endMinutes <= startMinutes) {
                 return reply.status(400).send({ error: "endTime must be after startTime" });
             }
+            if (isFutureEntryForClient(requestedPolicyDateKey, endMinutes, timezoneOffsetMinutes)) {
+                return reply.status(403).send({
+                    error: "Entries cannot be updated beyond the current date/time",
+                });
+            }
             const entryDate = new Date(`${date}T00:00:00.000Z`);
             if (Number.isNaN(entryDate.getTime())) {
                 return reply.status(400).send({ error: "Invalid date format" });
@@ -547,10 +748,10 @@ async function timesheetRoutes(fastify, opts) {
                 select: { id: true, project_id: true, notes: true },
             });
             if (overlapping.length > 0) {
-                const hasLeaveOverlap = overlapping.some((entry) => isLeaveEntryRecord(entry));
-                if (hasLeaveOverlap) {
+                const hasProtectedAbsenceOverlap = overlapping.some((entry) => isProtectedAbsenceEntryRecord(entry));
+                if (hasProtectedAbsenceOverlap) {
                     return reply.status(409).send({
-                        error: "Cannot update entry to overlap approved leave",
+                        error: "Cannot update entry to overlap approved leave/holiday",
                     });
                 }
                 else {
@@ -617,8 +818,8 @@ async function timesheetRoutes(fastify, opts) {
             if (existing.employee_id !== employee.id && employee.admin !== true) {
                 return reply.status(403).send({ error: "Cannot delete other user's entries" });
             }
-            if (isLeaveEntryRecord(existing)) {
-                return reply.status(400).send({ error: "Cannot delete leave entries" });
+            if (isProtectedAbsenceEntryRecord(existing)) {
+                return reply.status(400).send({ error: "Cannot delete leave/holiday entries" });
             }
             await prismaClient_1.default.entry.delete({ where: { id: entryId } });
             return reply.status(200).send({ deleted: true, id: entryId });
