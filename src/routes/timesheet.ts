@@ -87,6 +87,12 @@ function getClientCurrentMinuteOfDay(offsetMinutes: number): number {
   return ((totalMinutes % 1440) + 1440) % 1440;
 }
 
+function getClientAllowedEndMinuteOfDay(offsetMinutes: number): number {
+  const currentMinute = getClientCurrentMinuteOfDay(offsetMinutes);
+  const nextHourStart = (Math.floor(currentMinute / 60) + 1) * 60;
+  return Math.min(1440, nextHourStart);
+}
+
 function getDayOfWeekFromDayNumber(dayNumber: number): number {
   // 1970-01-01 was Thursday (4 when Sunday=0)
   return (dayNumber + 4) % 7;
@@ -125,7 +131,7 @@ function isFutureEntryForClient(
   if (entryDay > currentDay) return true;
   if (entryDay < currentDay) return false;
 
-  return endMinutes > getClientCurrentMinuteOfDay(offsetMinutes);
+  return endMinutes > getClientAllowedEndMinuteOfDay(offsetMinutes);
 }
 
 const isProtectedAbsenceEntryRecord = (entry: { project_id?: number | null; notes?: string | null }) => {
