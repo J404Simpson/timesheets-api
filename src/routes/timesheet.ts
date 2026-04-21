@@ -489,14 +489,18 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   });
 
-  // GET /projects - return all active projects
+  // GET /projects - return active projects by default, or all when includeInactive=true
   fastify.get("/projects", async (request, reply) => {
     try {
+      const { includeInactive } = request.query as { includeInactive?: string };
+      const includeInactiveFlag = includeInactive === "true";
+
       const projects = await prisma.project.findMany({
-        where: { active: true },
+        where: includeInactiveFlag ? undefined : { active: true },
         select: {
           id: true,
           name: true,
+          active: true,
           description: true,
           created_at: true,
         },
