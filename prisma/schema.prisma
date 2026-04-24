@@ -54,6 +54,7 @@ model phase {
   description    String?
   created_at     DateTime?       @default(now()) @db.Timestamp(6)
   enabled        Boolean         @default(true)
+  is_default     Boolean         @default(true)
   phase_tasks    phase_task[]
   project_phases project_phase[]
 

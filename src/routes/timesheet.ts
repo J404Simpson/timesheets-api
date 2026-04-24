@@ -513,6 +513,77 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   });
 
+  // POST /projects - create a new project and auto-link default phases (admin only)
+  fastify.post("/projects", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    try {
+      const requester = await prisma.employee.findUnique({
+        where: { object_id },
+        select: { id: true, admin: true },
+      });
+
+      if (!requester) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      if (requester.admin !== true) {
+        return reply.status(403).send({ error: "Admin access required" });
+      }
+
+      const { name, description } = request.body as { name: string; description?: string };
+      if (!name || !name.trim()) {
+        return reply.status(400).send({ error: "Project name is required" });
+      }
+
+      // Find all default phases
+      const defaultPhases = await prisma.phase.findMany({
+        where: { is_default: true },
+        select: { id: true },
+      });
+
+      // Create project and link default phases in one transaction
+      const project = await prisma.$transaction(async (tx) => {
+        const created = await tx.project.create({
+          data: {
+            name: name.trim(),
+            description: description?.trim() ?? null,
+            active: true,
+          },
+          select: {
+            id: true,
+            name: true,
+            active: true,
+            description: true,
+            created_at: true,
+          },
+        });
+
+        if (defaultPhases.length > 0) {
+          await tx.project_phase.createMany({
+            data: defaultPhases.map((phase) => ({
+              project_id: created.id,
+              phase_id: phase.id,
+              active: true,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        return created;
+      });
+
+      return reply.status(201).send({ project });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to create project" });
+    }
+  });
+
   // PATCH /projects/:id/deactivate - set project.active=false (admin only)
   fastify.patch(
     "/projects/:id/deactivate",
