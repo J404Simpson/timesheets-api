@@ -513,6 +513,58 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   });
 
+  // PATCH /projects/:id/deactivate - set project.active=false (admin only)
+  fastify.patch(
+    "/projects/:id/deactivate",
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply
+    ) => {
+      const projectId = Number(request.params.id);
+      if (Number.isNaN(projectId)) {
+        return reply.status(400).send({ error: "Project id required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({
+          where: { object_id },
+          select: { id: true, admin: true },
+        });
+
+        if (!requester) {
+          return reply.status(404).send({ error: "Employee not found" });
+        }
+
+        if (requester.admin !== true) {
+          return reply.status(403).send({ error: "Admin access required" });
+        }
+
+        const project = await prisma.project.update({
+          where: { id: projectId },
+          data: { active: false },
+          select: {
+            id: true,
+            name: true,
+            active: true,
+            description: true,
+            created_at: true,
+          },
+        });
+
+        return reply.status(200).send({ project });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to deactivate project" });
+      }
+    }
+  );
+
   // GET /projects/:id/phases - return all phases for a given project
   fastify.get(
     "/projects/:id/phases",
@@ -541,6 +593,83 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       } catch (err) {
         fastify.log.error(err);
         reply.status(500).send({ error: "Failed to fetch phases" });
+      }
+    }
+  );
+
+  // PATCH /projects/:projectId/phases/:phaseId/deactivate - set project_phase.active=false (admin only)
+  fastify.patch(
+    "/projects/:projectId/phases/:phaseId/deactivate",
+    async (
+      request: FastifyRequest<{ Params: { projectId: string; phaseId: string } }>,
+      reply: FastifyReply
+    ) => {
+      const projectId = Number(request.params.projectId);
+      const phaseId = Number(request.params.phaseId);
+      if (Number.isNaN(projectId) || Number.isNaN(phaseId)) {
+        return reply.status(400).send({ error: "projectId and phaseId are required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({
+          where: { object_id },
+          select: { id: true, admin: true },
+        });
+
+        if (!requester) {
+          return reply.status(404).send({ error: "Employee not found" });
+        }
+
+        if (requester.admin !== true) {
+          return reply.status(403).send({ error: "Admin access required" });
+        }
+
+        const link = await prisma.project_phase.findFirst({
+          where: {
+            project_id: projectId,
+            phase_id: phaseId,
+          },
+          select: { id: true, active: true, phase: { select: { id: true, name: true, description: true, enabled: true } } },
+        });
+
+        if (!link) {
+          return reply.status(404).send({ error: "Project phase link not found" });
+        }
+
+        const updated = await prisma.project_phase.update({
+          where: { id: link.id },
+          data: { active: false },
+          select: {
+            active: true,
+            phase: {
+              select: {
+                id: true,
+                name: true,
+                description: true,
+                enabled: true,
+              },
+            },
+          },
+        });
+
+        return reply.status(200).send({
+          phase: {
+            id: updated.phase.id,
+            name: updated.phase.name,
+            description: updated.phase.description,
+            enabled: updated.phase.enabled,
+            active: updated.active,
+          },
+        });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to deactivate phase" });
       }
     }
   );
