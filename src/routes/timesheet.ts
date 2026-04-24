@@ -540,13 +540,33 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "Project name is required" });
       }
 
-      // Find all default phases
+      // Helper: get all default phases and their active tasks in one query
       const defaultPhases = await prisma.phase.findMany({
         where: { is_default: true },
-        select: { id: true },
+        select: {
+          id: true,
+          phase_tasks: {
+            where: { task: { active: true } },
+            select: { task_id: true },
+          },
+        },
       });
 
-      // Create project and link default phases in one transaction
+      // Prepare batch inserts
+      const phaseLinks = defaultPhases.map((phase) => ({
+        phase_id: phase.id,
+        active: true,
+      }));
+
+      // Collect all (phase_id, task_id) pairs for active tasks
+      const phaseTaskLinks: { phase_id: number; task_id: number }[] = [];
+      for (const phase of defaultPhases) {
+        for (const pt of phase.phase_tasks) {
+          phaseTaskLinks.push({ phase_id: phase.id, task_id: pt.task_id });
+        }
+      }
+
+      // Transaction: create project, link phases, link tasks
       const project = await prisma.$transaction(async (tx) => {
         const created = await tx.project.create({
           data: {
@@ -563,13 +583,22 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           },
         });
 
-        if (defaultPhases.length > 0) {
+        // Link phases to project
+        if (phaseLinks.length > 0) {
           await tx.project_phase.createMany({
-            data: defaultPhases.map((phase) => ({
+            data: phaseLinks.map((link) => ({
               project_id: created.id,
-              phase_id: phase.id,
-              active: true,
+              phase_id: link.phase_id,
+              active: link.active,
             })),
+            skipDuplicates: true,
+          });
+        }
+
+        // Link all active tasks to their phases in one batch
+        if (phaseTaskLinks.length > 0) {
+          await tx.phase_task.createMany({
+            data: phaseTaskLinks,
             skipDuplicates: true,
           });
         }
