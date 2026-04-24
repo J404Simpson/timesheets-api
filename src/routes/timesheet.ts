@@ -534,6 +534,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           id: pp.phase.id,
           name: pp.phase.name,
           description: pp.phase.description,
+          active: pp.active,
           enabled: pp.phase.enabled,
         }));
         reply.status(200).send({ phases });
@@ -565,6 +566,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
           WHERE pp.project_id = ${projectId}
             AND pt.phase_id = ${phaseId}
+            AND pp.active = true
             AND t.enabled = true
           ORDER BY t.name ASC
         `;
