@@ -560,7 +560,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       try {
         const tasks = await prisma.$queryRaw`
-          SELECT DISTINCT t.id, t.name, t.enabled
+          SELECT DISTINCT t.id, t.name, t.enabled, t.department_id
           FROM task t
           INNER JOIN phase_task pt ON pt.task_id = t.id
           INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
