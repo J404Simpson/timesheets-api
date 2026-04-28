@@ -796,7 +796,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           WHERE pp.project_id = ${projectId}
             AND pt.phase_id = ${phaseId}
             AND pp.active = true
-            AND t.enabled = true
+            AND t.active = true
           ORDER BY t.name ASC
         `;
 
