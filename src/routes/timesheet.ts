@@ -788,22 +788,70 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       }
 
       try {
-        const tasks = await prisma.$queryRaw`
-          SELECT DISTINCT t.id, t.name, t.enabled, t.department_id
-          FROM task t
-          INNER JOIN phase_task pt ON pt.task_id = t.id
-          INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
-          WHERE pp.project_id = ${projectId}
-            AND pt.phase_id = ${phaseId}
-            AND pp.active = true
-            AND t.active = true
-          ORDER BY t.name ASC
-        `;
+        const { includeInactive } = request.query as { includeInactive?: string };
+        const includeInactiveFlag = includeInactive === "true";
+        let tasks;
+        if (includeInactiveFlag) {
+          tasks = await prisma.$queryRaw`
+            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active
+            FROM task t
+            INNER JOIN phase_task pt ON pt.task_id = t.id
+            INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
+            WHERE pp.project_id = ${projectId}
+              AND pt.phase_id = ${phaseId}
+              AND pp.active = true
+            ORDER BY t.name ASC
+          `;
+        } else {
+          tasks = await prisma.$queryRaw`
+            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active
+            FROM task t
+            INNER JOIN phase_task pt ON pt.task_id = t.id
+            INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
+            WHERE pp.project_id = ${projectId}
+              AND pt.phase_id = ${phaseId}
+              AND pp.active = true
+              AND t.active = true
+            ORDER BY t.name ASC
+          `;
+        }
 
         return reply.status(200).send({ tasks });
       } catch (err) {
         fastify.log.error(err);
         return reply.status(500).send({ error: "Failed to fetch tasks for project phase" });
+      }
+    }
+  );
+
+  // PATCH /tasks/:id/deactivate - set task.active=false (admin only)
+  fastify.patch(
+    "/tasks/:id/deactivate",
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply
+    ) => {
+      const taskId = Number(request.params.id);
+      if (Number.isNaN(taskId)) {
+        return reply.status(400).send({ error: "Task id required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({ where: { object_id }, select: { admin: true } });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        const task = await prisma.task.update({ where: { id: taskId }, data: { active: false }, select: { id: true, name: true, active: true } });
+        return reply.status(200).send({ task });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to deactivate task" });
       }
     }
   );
