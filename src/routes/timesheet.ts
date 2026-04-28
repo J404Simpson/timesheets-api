@@ -847,7 +847,25 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         if (!requester) return reply.status(404).send({ error: "Employee not found" });
         if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
 
+        // Safe logging: only log task id and requester object id (no tokens or PII)
+        fastify.log.info({ action: "deactivateTaskAttempt", taskId, object_id }, "Attempting to deactivate task");
+
+        // Verify task exists and current state before updating
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId }, select: { id: true, active: true, name: true } });
+        if (!existingTask) {
+          fastify.log.info({ action: "deactivateTaskNotFound", taskId, object_id }, "Task not found for deactivation");
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        if (existingTask.active === false) {
+          fastify.log.info({ action: "deactivateTaskAlreadyInactive", taskId, object_id }, "Task already inactive");
+          return reply.status(400).send({ error: "Task already inactive" });
+        }
+
         const task = await prisma.task.update({ where: { id: taskId }, data: { active: false }, select: { id: true, name: true, active: true } });
+
+        fastify.log.info({ action: "deactivateTaskSuccess", taskId, object_id }, "Task deactivated");
+
         return reply.status(200).send({ task });
       } catch (err) {
         fastify.log.error(err);
