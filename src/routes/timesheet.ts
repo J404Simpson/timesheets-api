@@ -824,6 +824,51 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   );
 
+  // GET /tasks - return all tasks for admin management
+  fastify.get("/tasks", async (request, reply) => {
+    const user = (request as any).user;
+    const object_id = user?.oid;
+    if (!object_id) {
+      return reply.status(401).send({ error: "Authenticated user required" });
+    }
+
+    try {
+      const requester = await prisma.employee.findUnique({
+        where: { object_id },
+        select: { admin: true },
+      });
+
+      if (!requester) {
+        return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      if (requester.admin !== true) {
+        return reply.status(403).send({ error: "Admin access required" });
+      }
+
+      const { includeInactive } = request.query as { includeInactive?: string };
+      const includeInactiveFlag = includeInactive === "true";
+
+      const tasks = await prisma.task.findMany({
+        where: includeInactiveFlag ? undefined : { active: true },
+        select: {
+          id: true,
+          name: true,
+          enabled: true,
+          active: true,
+          department_id: true,
+          task_type: true,
+        },
+        orderBy: [{ task_type: "asc" }, { name: "asc" }],
+      });
+
+      return reply.status(200).send({ tasks });
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.status(500).send({ error: "Failed to fetch tasks" });
+    }
+  });
+
   // PATCH /tasks/:id/deactivate - set task.active=false (admin only)
   fastify.patch(
     "/tasks/:id/deactivate",
