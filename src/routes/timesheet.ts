@@ -793,7 +793,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         let tasks;
         if (includeInactiveFlag) {
           tasks = await prisma.$queryRaw`
-            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active
+            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type
             FROM task t
             INNER JOIN phase_task pt ON pt.task_id = t.id
             INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id
@@ -804,7 +804,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           `;
         } else {
           tasks = await prisma.$queryRaw`
-            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active
+            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type
             FROM task t
             INNER JOIN phase_task pt ON pt.task_id = t.id
             INNER JOIN project_phase pp ON pp.phase_id = pt.phase_id

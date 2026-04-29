@@ -73,6 +73,12 @@ model project {
   @@map("project")
 }
 
+enum TaskType {
+  LEAVE
+  PROJECT
+  SUSTAINING
+}
+
 model task {
   id            Int               @id @default(autoincrement())
   name          String            @db.VarChar(255)
@@ -80,6 +86,7 @@ model task {
   created_at    DateTime?         @default(now()) @db.Timestamp(6)
   active        Boolean           @default(true)
   enabled       Boolean           @default(true)
+  task_type     TaskType
   entries       entry[]
   phase_tasks   phase_task[]
   department    department?       @relation(fields: [department_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_task_department")
