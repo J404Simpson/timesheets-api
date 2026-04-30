@@ -858,11 +858,26 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           active: true,
           department_id: true,
           task_type: true,
+          phase_tasks: {
+            select: {
+              phase: { select: { id: true, name: true } },
+            },
+          },
         },
         orderBy: [{ task_type: "asc" }, { name: "asc" }],
       });
 
-      return reply.status(200).send({ tasks });
+      const mapped = tasks.map((t) => ({
+        id: t.id,
+        name: t.name,
+        enabled: t.enabled,
+        active: t.active,
+        department_id: t.department_id,
+        task_type: t.task_type,
+        phases: t.phase_tasks.map((pt) => ({ id: pt.phase.id, name: pt.phase.name })),
+      }));
+
+      return reply.status(200).send({ tasks: mapped });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: "Failed to fetch tasks" });
