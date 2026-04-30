@@ -988,6 +988,60 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   );
 
+  // PATCH /tasks/:id/active - set task.active (admin only)
+  fastify.patch(
+    "/tasks/:id/active",
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { active?: boolean } }>,
+      reply: FastifyReply
+    ) => {
+      const taskId = Number(request.params.id);
+      if (Number.isNaN(taskId)) {
+        return reply.status(400).send({ error: "Task id required" });
+      }
+
+      const { active } = request.body ?? {};
+      if (typeof active !== "boolean") {
+        return reply.status(400).send({ error: "active boolean is required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({ where: { object_id }, select: { admin: true } });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId }, select: { id: true } });
+        if (!existingTask) {
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        const task = await prisma.task.update({
+          where: { id: taskId },
+          data: { active },
+          select: {
+            id: true,
+            name: true,
+            enabled: true,
+            active: true,
+            department_id: true,
+            task_type: true,
+          },
+        });
+
+        return reply.status(200).send({ task });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to update task active state" });
+      }
+    }
+  );
+
   // POST /entries - create a new timesheet entry for the authenticated user
   fastify.post("/entries", async (request, reply) => {
     const user = (request as any).user;
