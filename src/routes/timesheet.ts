@@ -884,6 +884,101 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   });
 
+  // POST /tasks - create a new task (admin only)
+  fastify.post(
+    "/tasks",
+    async (
+      request: FastifyRequest<{ Body: { name?: string; department_id?: number; phase_id?: number; enabled?: boolean } }>,
+      reply: FastifyReply
+    ) => {
+      const { name, department_id, phase_id, enabled } = request.body ?? {};
+
+      // Validate required fields
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return reply.status(400).send({ error: "Task name is required" });
+      }
+
+      if (typeof department_id !== "number" || Number.isNaN(department_id)) {
+        return reply.status(400).send({ error: "Department id is required" });
+      }
+
+      if (typeof phase_id !== "number" || Number.isNaN(phase_id)) {
+        return reply.status(400).send({ error: "Phase id is required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        // Check admin access
+        const requester = await prisma.employee.findUnique({
+          where: { object_id },
+          select: { admin: true },
+        });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        // Verify department exists
+        const department = await prisma.department.findUnique({
+          where: { id: department_id },
+          select: { id: true },
+        });
+        if (!department) {
+          return reply.status(400).send({ error: "Department not found" });
+        }
+
+        // Verify phase exists
+        const phase = await prisma.phase.findUnique({
+          where: { id: phase_id },
+          select: { id: true },
+        });
+        if (!phase) {
+          return reply.status(400).send({ error: "Phase not found" });
+        }
+
+        // Create the task
+        const task = await prisma.task.create({
+          data: {
+            name: name.trim(),
+            department_id,
+            task_type: "PROJECT",
+            active: true, // Default to active
+            enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (claimable)
+          },
+          select: {
+            id: true,
+            name: true,
+            enabled: true,
+            active: true,
+            department_id: true,
+            task_type: true,
+          },
+        });
+
+        // Link task to phase
+        await prisma.phase_task.create({
+          data: {
+            task_id: task.id,
+            phase_id,
+          },
+        });
+
+        fastify.log.info(
+          { action: "createTaskSuccess", taskId: task.id, department_id, phase_id, object_id },
+          "Task created successfully"
+        );
+
+        return reply.status(201).send({ task });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to create task" });
+      }
+    }
+  );
+
   // PATCH /tasks/:id/deactivate - set task.active=false (admin only)
   fastify.patch(
     "/tasks/:id/deactivate",
