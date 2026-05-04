@@ -793,7 +793,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         let tasks;
         if (includeInactiveFlag) {
           tasks = await prisma.$queryRaw`
-            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
@@ -810,7 +810,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           `;
         } else {
           tasks = await prisma.$queryRaw`
-            SELECT DISTINCT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
