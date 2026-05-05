@@ -991,6 +991,80 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
   );
 
+  // POST /tasks/sustaining - create a new sustaining task with multiple departments (admin only)
+  fastify.post(
+    "/tasks/sustaining",
+    async (
+      request: FastifyRequest<{ Body: { name?: string; department_ids?: number[]; enabled?: boolean } }>,
+      reply: FastifyReply
+    ) => {
+      const { name, department_ids, enabled } = request.body ?? {};
+
+      if (!name || typeof name !== "string" || !name.trim()) {
+        return reply.status(400).send({ error: "Task name is required" });
+      }
+
+      if (!Array.isArray(department_ids) || department_ids.length === 0) {
+        return reply.status(400).send({ error: "At least one department is required" });
+      }
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({
+          where: { object_id },
+          select: { admin: true },
+        });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        // Verify all departments exist
+        const existingDepts = await prisma.department.findMany({
+          where: { id: { in: department_ids } },
+          select: { id: true },
+        });
+        if (existingDepts.length !== department_ids.length) {
+          return reply.status(400).send({ error: "One or more departments not found" });
+        }
+
+        // Create the sustaining task
+        const task = await prisma.task.create({
+          data: {
+            name: name.trim(),
+            task_type: "SUSTAINING",
+            active: true,
+            enabled: typeof enabled === "boolean" ? enabled : true,
+          },
+          select: { id: true, name: true, enabled: true, active: true, task_type: true },
+        });
+
+        // Link task to sustaining phase (phase_id = 1)
+        await prisma.phase_task.create({
+          data: { task_id: task.id, phase_id: 1 },
+        });
+
+        // Link task to each department via department_task
+        await prisma.department_task.createMany({
+          data: department_ids.map((dept_id) => ({ department_id: dept_id, task_id: task.id })),
+        });
+
+        fastify.log.info(
+          { action: "createSustainingTaskSuccess", taskId: task.id, department_ids, object_id },
+          "Sustaining task created successfully"
+        );
+
+        return reply.status(201).send({ task });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to create sustaining task" });
+      }
+    }
+  );
+
   // PATCH /tasks/:id/deactivate - set task.active=false (admin only)
   fastify.patch(
     "/tasks/:id/deactivate",
