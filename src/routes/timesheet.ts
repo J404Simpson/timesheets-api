@@ -1068,7 +1068,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             department_id,
             task_type: "PROJECT",
             active: true, // Default to active
-            enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (claimable)
+            enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (qualifying)
           },
           select: {
             id: true,
