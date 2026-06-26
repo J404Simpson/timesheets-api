@@ -137,9 +137,6 @@ async function validateToken(
   }
 }
 
-// Apply token validation to all requests
-server.addHook("onRequest", validateToken);
-
 // Health check route (no auth required)
 server.get("/_health", async () => {
   return { ok: true };
@@ -227,6 +224,9 @@ async function main() {
   } catch (err) {
     // Could not register CORS, continuing without it
   }
+
+  // Apply token validation to all requests after middleware/plugin registration.
+  server.addHook("onRequest", validateToken);
 
   // Route to handle user login data (moved here so `prisma` is available)
   server.post(
