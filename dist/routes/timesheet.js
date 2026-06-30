@@ -72,6 +72,14 @@ function valueToDateKey(value) {
         return value.slice(0, 10);
     return value.toISOString().slice(0, 10);
 }
+function getMondayForDate(date) {
+    const monday = new Date(date);
+    const day = monday.getDay();
+    const diffToMonday = day === 0 ? -6 : 1 - day;
+    monday.setDate(monday.getDate() + diffToMonday);
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+}
 function getClientCurrentDayNumber(offsetMinutes) {
     const localMs = Date.now() - offsetMinutes * 60000;
     return Math.floor(localMs / DAY_MS);
@@ -339,6 +347,51 @@ async function timesheetRoutes(fastify, opts) {
         catch (err) {
             fastify.log.error(err);
             reply.status(500).send({ error: "Failed to fetch entries" });
+        }
+    });
+    // GET /entries/date-bounds - return first/last entry dates for the authenticated or selected employee
+    fastify.get("/entries/date-bounds", async (request, reply) => {
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requestingEmployee = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { id: true, admin: true },
+            });
+            if (!requestingEmployee) {
+                return reply.status(404).send({ error: "Employee not found" });
+            }
+            const { employeeId } = request.query;
+            const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
+            let targetEmployeeId = requestingEmployee.id;
+            if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
+                if (requestedEmployeeId !== requestingEmployee.id && requestingEmployee.admin !== true) {
+                    return reply.status(403).send({ error: "Admin access required" });
+                }
+                const targetEmployee = await prismaClient_1.default.employee.findUnique({
+                    where: { id: requestedEmployeeId },
+                    select: { id: true },
+                });
+                if (!targetEmployee) {
+                    return reply.status(404).send({ error: "Target employee not found" });
+                }
+                targetEmployeeId = targetEmployee.id;
+            }
+            const bounds = await prismaClient_1.default.entry.aggregate({
+                where: { employee_id: targetEmployeeId },
+                _min: { date: true },
+                _max: { date: true },
+            });
+            const firstDate = bounds._min.date ? valueToDateKey(bounds._min.date) : null;
+            const lastDate = bounds._max.date ? valueToDateKey(bounds._max.date) : null;
+            return reply.status(200).send({ firstDate, lastDate });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to fetch entry date bounds" });
         }
     });
     // GET /phases/:phaseId/tasks - return tasks for a phase and the employee's department (inferred from JWT)
