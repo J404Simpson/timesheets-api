@@ -128,6 +128,19 @@ function isPastPreviousWeekCutoffForClient(offsetMinutes: number): boolean {
   return dow !== 1;
 }
 
+function isEarlierThanPreviousWeekForClient(dateKey: string, offsetMinutes: number): boolean {
+  const entryDay = dateKeyToDayNumber(dateKey);
+  if (entryDay == null) return false;
+
+  const currentDay = getClientCurrentDayNumber(offsetMinutes);
+  const dow = getDayOfWeekFromDayNumber(currentDay);
+  const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+  const currentMonday = currentDay - daysSinceMonday;
+  const previousMonday = currentMonday - 7;
+
+  return entryDay < previousMonday;
+}
+
 function isFutureEntryForClient(
   dateKey: string,
   endMinutes: number,
@@ -1501,11 +1514,10 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       if (
         employee.admin !== true &&
-        isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
-        isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)
+        isEarlierThanPreviousWeekForClient(policyDateKey, timezoneOffsetMinutes)
       ) {
         return reply.status(403).send({
-          error: "Previous week entries can only be added on Monday unless you are an admin",
+          error: "Entries cannot be created earlier than last week unless you are an admin",
         });
       }
 
@@ -1719,14 +1731,13 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       const existingPolicyDateKey = valueToDateKey(existing.date);
       if (
         employee.admin !== true &&
-        isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
         (
-          isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
-          isPreviousWeekDateForClient(requestedPolicyDateKey, timezoneOffsetMinutes)
+          isEarlierThanPreviousWeekForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
+          isEarlierThanPreviousWeekForClient(requestedPolicyDateKey, timezoneOffsetMinutes)
         )
       ) {
         return reply.status(403).send({
-          error: "Previous week entries can only be edited on Monday unless you are an admin",
+          error: "Entries earlier than last week can only be edited by an admin",
         });
       }
 
