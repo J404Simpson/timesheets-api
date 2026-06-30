@@ -124,8 +124,9 @@ function isPreviousWeekDateForClient(dateKey: string, offsetMinutes: number): bo
 function isPastPreviousWeekCutoffForClient(offsetMinutes: number): boolean {
   const currentDay = getClientCurrentDayNumber(offsetMinutes);
   const dow = getDayOfWeekFromDayNumber(currentDay);
-  // Monday (1) is still allowed up to local midnight; Tuesday+ blocked.
-  return dow !== 1;
+  // Previous-week edits are allowed through end-of-day Tuesday local time.
+  // Block on Sunday (0) and Wednesday-Saturday (3-6).
+  return dow === 0 || dow >= 3;
 }
 
 function isEarlierThanPreviousWeekForClient(dateKey: string, offsetMinutes: number): boolean {
@@ -1521,6 +1522,16 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         });
       }
 
+      if (
+        employee.admin !== true &&
+        isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+        isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)
+      ) {
+        return reply.status(403).send({
+          error: "Previous week entries can only be added through Tuesday unless you are an admin",
+        });
+      }
+
       const [startH, startM] = startTime.split(":").map((v) => Number(v));
       const [endH, endM] = endTime.split(":").map((v) => Number(v));
       if (
@@ -1738,6 +1749,19 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       ) {
         return reply.status(403).send({
           error: "Entries earlier than last week can only be edited by an admin",
+        });
+      }
+
+      if (
+        employee.admin !== true &&
+        isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+        (
+          isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
+          isPreviousWeekDateForClient(requestedPolicyDateKey, timezoneOffsetMinutes)
+        )
+      ) {
+        return reply.status(403).send({
+          error: "Previous week entries can only be edited through Tuesday unless you are an admin",
         });
       }
 

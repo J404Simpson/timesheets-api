@@ -113,8 +113,9 @@ function isPreviousWeekDateForClient(dateKey, offsetMinutes) {
 function isPastPreviousWeekCutoffForClient(offsetMinutes) {
     const currentDay = getClientCurrentDayNumber(offsetMinutes);
     const dow = getDayOfWeekFromDayNumber(currentDay);
-    // Monday (1) is still allowed up to local midnight; Tuesday+ blocked.
-    return dow !== 1;
+    // Previous-week edits are allowed through end-of-day Tuesday local time.
+    // Block on Sunday (0) and Wednesday-Saturday (3-6).
+    return dow === 0 || dow >= 3;
 }
 function isEarlierThanPreviousWeekForClient(dateKey, offsetMinutes) {
     const entryDay = dateKeyToDayNumber(dateKey);
@@ -1284,6 +1285,13 @@ async function timesheetRoutes(fastify, opts) {
                     error: "Entries cannot be created earlier than last week unless you are an admin",
                 });
             }
+            if (employee.admin !== true &&
+                isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+                isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)) {
+                return reply.status(403).send({
+                    error: "Previous week entries can only be added through Tuesday unless you are an admin",
+                });
+            }
             const [startH, startM] = startTime.split(":").map((v) => Number(v));
             const [endH, endM] = endTime.split(":").map((v) => Number(v));
             if (Number.isNaN(startH) ||
@@ -1452,6 +1460,14 @@ async function timesheetRoutes(fastify, opts) {
                     isEarlierThanPreviousWeekForClient(requestedPolicyDateKey, timezoneOffsetMinutes))) {
                 return reply.status(403).send({
                     error: "Entries earlier than last week can only be edited by an admin",
+                });
+            }
+            if (employee.admin !== true &&
+                isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
+                (isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
+                    isPreviousWeekDateForClient(requestedPolicyDateKey, timezoneOffsetMinutes))) {
+                return reply.status(403).send({
+                    error: "Previous week entries can only be edited through Tuesday unless you are an admin",
                 });
             }
             const targetEmployeeId = existing.employee_id;
