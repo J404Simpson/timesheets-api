@@ -598,6 +598,46 @@ async function timesheetRoutes(fastify, opts) {
             return reply.status(500).send({ error: "Failed to deactivate project" });
         }
     });
+    // PATCH /projects/:id/activate - set project.active=true (admin only)
+    fastify.patch("/projects/:id/activate", async (request, reply) => {
+        const projectId = Number(request.params.id);
+        if (Number.isNaN(projectId)) {
+            return reply.status(400).send({ error: "Project id required" });
+        }
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { id: true, admin: true },
+            });
+            if (!requester) {
+                return reply.status(404).send({ error: "Employee not found" });
+            }
+            if (requester.admin !== true) {
+                return reply.status(403).send({ error: "Admin access required" });
+            }
+            const project = await prismaClient_1.default.project.update({
+                where: { id: projectId },
+                data: { active: true },
+                select: {
+                    id: true,
+                    name: true,
+                    active: true,
+                    description: true,
+                    created_at: true,
+                },
+            });
+            return reply.status(200).send({ project });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to activate project" });
+        }
+    });
     // GET /projects/:id/phases - return all phases for a given project
     fastify.get("/projects/:id/phases", async (request, reply) => {
         const projectId = Number(request.params.id);
@@ -605,8 +645,12 @@ async function timesheetRoutes(fastify, opts) {
             return reply.status(400).send({ error: "Project id required" });
         }
         try {
+            const { includeInactive } = request.query;
+            const includeInactiveFlag = includeInactive === "true";
             const projectPhases = await prismaClient_1.default.project_phase.findMany({
-                where: { project_id: projectId },
+                where: includeInactiveFlag
+                    ? { project_id: projectId }
+                    : { project_id: projectId, active: true },
                 include: { phase: true },
                 orderBy: { id: "asc" },
             });
@@ -685,6 +729,56 @@ async function timesheetRoutes(fastify, opts) {
         catch (err) {
             fastify.log.error(err);
             return reply.status(500).send({ error: "Failed to deactivate phase" });
+        }
+    });
+    // PATCH /projects/:projectId/phases/:phaseId/activate - set project_phase.active=true (admin only)
+    fastify.patch("/projects/:projectId/phases/:phaseId/activate", async (request, reply) => {
+        const projectId = Number(request.params.projectId);
+        const phaseId = Number(request.params.phaseId);
+        if (Number.isNaN(projectId) || Number.isNaN(phaseId)) {
+            return reply.status(400).send({ error: "projectId and phaseId are required" });
+        }
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { id: true, admin: true },
+            });
+            if (!requester)
+                return reply.status(404).send({ error: "Employee not found" });
+            if (requester.admin !== true)
+                return reply.status(403).send({ error: "Admin access required" });
+            const link = await prismaClient_1.default.project_phase.findFirst({
+                where: { project_id: projectId, phase_id: phaseId },
+                select: { id: true, active: true, phase: { select: { id: true, name: true, description: true, enabled: true } } },
+            });
+            if (!link)
+                return reply.status(404).send({ error: "Project phase link not found" });
+            const updated = await prismaClient_1.default.project_phase.update({
+                where: { id: link.id },
+                data: { active: true },
+                select: {
+                    active: true,
+                    phase: { select: { id: true, name: true, description: true, enabled: true } },
+                },
+            });
+            return reply.status(200).send({
+                phase: {
+                    id: updated.phase.id,
+                    name: updated.phase.name,
+                    description: updated.phase.description,
+                    enabled: updated.phase.enabled,
+                    active: updated.active,
+                },
+            });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to activate phase" });
         }
     });
     // GET /projects/:projectId/phases/:phaseId/tasks - return enabled tasks linked to both project phase and phase
@@ -846,7 +940,7 @@ async function timesheetRoutes(fastify, opts) {
                     department_id,
                     task_type: "PROJECT",
                     active: true, // Default to active
-                    enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (claimable)
+                    enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (qualifying)
                 },
                 select: {
                     id: true,
@@ -870,6 +964,63 @@ async function timesheetRoutes(fastify, opts) {
         catch (err) {
             fastify.log.error(err);
             return reply.status(500).send({ error: "Failed to create task" });
+        }
+    });
+    // POST /tasks/sustaining - create a new sustaining task with multiple departments (admin only)
+    fastify.post("/tasks/sustaining", async (request, reply) => {
+        const { name, department_ids, enabled } = request.body ?? {};
+        if (!name || typeof name !== "string" || !name.trim()) {
+            return reply.status(400).send({ error: "Task name is required" });
+        }
+        if (!Array.isArray(department_ids) || department_ids.length === 0) {
+            return reply.status(400).send({ error: "At least one department is required" });
+        }
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { admin: true },
+            });
+            if (!requester)
+                return reply.status(404).send({ error: "Employee not found" });
+            if (requester.admin !== true)
+                return reply.status(403).send({ error: "Admin access required" });
+            // Verify all departments exist
+            const existingDepts = await prismaClient_1.default.department.findMany({
+                where: { id: { in: department_ids } },
+                select: { id: true },
+            });
+            if (existingDepts.length !== department_ids.length) {
+                return reply.status(400).send({ error: "One or more departments not found" });
+            }
+            // Create the sustaining task
+            const task = await prismaClient_1.default.task.create({
+                data: {
+                    name: name.trim(),
+                    task_type: "SUSTAINING",
+                    active: true,
+                    enabled: typeof enabled === "boolean" ? enabled : true,
+                },
+                select: { id: true, name: true, enabled: true, active: true, task_type: true },
+            });
+            // Link task to sustaining phase (phase_id = 1)
+            await prismaClient_1.default.phase_task.create({
+                data: { task_id: task.id, phase_id: 1 },
+            });
+            // Link task to each department via department_task
+            await prismaClient_1.default.department_task.createMany({
+                data: department_ids.map((dept_id) => ({ department_id: dept_id, task_id: task.id })),
+            });
+            fastify.log.info({ action: "createSustainingTaskSuccess", taskId: task.id, department_ids, object_id }, "Sustaining task created successfully");
+            return reply.status(201).send({ task });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to create sustaining task" });
         }
     });
     // PATCH /tasks/:id/deactivate - set task.active=false (admin only)
@@ -996,6 +1147,50 @@ async function timesheetRoutes(fastify, opts) {
         catch (err) {
             fastify.log.error(err);
             return reply.status(500).send({ error: "Failed to update task active state" });
+        }
+    });
+    // PATCH /tasks/:id/name - set task.name (admin only)
+    fastify.patch("/tasks/:id/name", async (request, reply) => {
+        const taskId = Number(request.params.id);
+        if (Number.isNaN(taskId)) {
+            return reply.status(400).send({ error: "Task id required" });
+        }
+        const { name } = request.body ?? {};
+        if (!name || typeof name !== "string" || !name.trim()) {
+            return reply.status(400).send({ error: "Task name is required" });
+        }
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({ where: { object_id }, select: { admin: true } });
+            if (!requester)
+                return reply.status(404).send({ error: "Employee not found" });
+            if (requester.admin !== true)
+                return reply.status(403).send({ error: "Admin access required" });
+            const existingTask = await prismaClient_1.default.task.findUnique({ where: { id: taskId }, select: { id: true } });
+            if (!existingTask) {
+                return reply.status(404).send({ error: "Task not found" });
+            }
+            const task = await prismaClient_1.default.task.update({
+                where: { id: taskId },
+                data: { name: name.trim() },
+                select: {
+                    id: true,
+                    name: true,
+                    enabled: true,
+                    active: true,
+                    department_id: true,
+                    task_type: true,
+                },
+            });
+            return reply.status(200).send({ task });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to update task name" });
         }
     });
     // POST /entries - create a new timesheet entry for the authenticated user

@@ -729,8 +729,12 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "Project id required" });
       }
       try {
+        const { includeInactive } = request.query as { includeInactive?: string };
+        const includeInactiveFlag = includeInactive === "true";
         const projectPhases = await prisma.project_phase.findMany({
-          where: { project_id: projectId },
+          where: includeInactiveFlag
+            ? { project_id: projectId }
+            : { project_id: projectId, active: true },
           include: { phase: true },
           orderBy: { id: "asc" },
         });
