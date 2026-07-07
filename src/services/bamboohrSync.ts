@@ -48,7 +48,6 @@ const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
 const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
-const FRIDAY_HOURS_PER_DAY = Number(process.env.BAMBOOHR_FRIDAY_HOURS_PER_DAY ?? 7);
 const CANCEL_LOOKBACK_DAYS = Number(process.env.BAMBOOHR_CANCEL_LOOKBACK_DAYS ?? 90);
 
 function getConfig() {
@@ -181,10 +180,6 @@ function addDays(date: Date, days: number): Date {
   return copy;
 }
 
-function isFriday(dateKey: string): boolean {
-  return new Date(`${dateKey}T00:00:00.000Z`).getUTCDay() === 5;
-}
-
 function expandDateRange(start: Date, end: Date): string[] {
   const out: string[] = [];
   let current = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
@@ -202,19 +197,11 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
       ? String(request.amount.unit ?? "hours").toLowerCase()
       : "hours";
 
-  const toHours = (raw: unknown, dateKey?: string): number | null => {
+  const toHours = (raw: unknown): number | null => {
     const h = parseHours(raw);
     if (h === null) return null;
     if (amountUnit === "days") {
-      const normalHours = Number((h * HOURS_PER_DAY).toFixed(2));
-      if (dateKey && isFriday(dateKey) && normalHours === HOURS_PER_DAY) {
-        return FRIDAY_HOURS_PER_DAY;
-      }
-      return normalHours;
-    }
-    // For hours unit, still apply Friday cap if value equals a full working day
-    if (dateKey && isFriday(dateKey) && h === HOURS_PER_DAY) {
-      return FRIDAY_HOURS_PER_DAY;
+      return Number((h * HOURS_PER_DAY).toFixed(2));
     }
     return h;
   };
@@ -225,8 +212,7 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
     const mapped = explicitDaily
       .map((d: any) => {
         const date = parseDate(d.date ?? d.day ?? d.requestDate);
-        const dk = date ? toDateKey(date) : undefined;
-        const hours = toHours(d.hours ?? d.amount ?? d.duration, dk);
+        const hours = toHours(d.hours ?? d.amount ?? d.duration);
         if (!date || !hours) return null;
         return { dateKey: toDateKey(date), hours };
       })
@@ -239,7 +225,7 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
     const mapped = Object.entries(explicitDaily as Record<string, unknown>)
       .map(([dateStr, amount]) => {
         const date = parseDate(dateStr);
-        const hours = toHours(amount, dateStr);
+        const hours = toHours(amount);
         if (!date || !hours) return null;
         return { dateKey: toDateKey(date), hours };
       })
@@ -265,9 +251,7 @@ function splitRequestIntoDailyHours(request: BambooRequest): Array<{ dateKey: st
   const hoursPerDay = Number((totalHours / dateKeys.length).toFixed(2));
   return dateKeys.map((dateKey) => ({
     dateKey,
-    hours: (amountUnit === "days" && isFriday(dateKey) && hoursPerDay === HOURS_PER_DAY)
-      ? FRIDAY_HOURS_PER_DAY
-      : hoursPerDay,
+    hours: hoursPerDay,
   }));
 }
 

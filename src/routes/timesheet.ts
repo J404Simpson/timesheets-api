@@ -8,6 +8,7 @@ const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 2);
 const PROTECTED_PROJECT_IDS = new Set([HOLIDAY_PROJECT_ID, LEAVE_PROJECT_ID]);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const FULL_DAY_START_TIME = new Date("1970-01-01T09:00:00.000Z");
+const FULL_DAY_HOLIDAY_HOURS = 8;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -16,11 +17,6 @@ function toDateKeyLocalDate(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, "0");
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
-}
-
-function getFullDayHoursForDateKey(dateKey: string): number {
-  const dow = new Date(`${dateKey}T00:00:00.000Z`).getUTCDay();
-  return dow === 5 ? 7 : 8;
 }
 
 function endTimeFromHourDecimal(hourValue: number): Date {
@@ -549,7 +545,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           });
           if (hasProtectedAbsenceAlready) return null;
 
-          const hours = getFullDayHoursForDateKey(dateKey);
+          const hours = FULL_DAY_HOLIDAY_HOURS;
           return {
             id: -(100000 + index),
             employee_id: targetEmployeeId,
@@ -1831,7 +1827,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           return reply.status(400).send({ error: "Selected date is not a configured regional public holiday" });
         }
 
-        const holidayHours = getFullDayHoursForDateKey(policyDateKey);
+        const holidayHours = FULL_DAY_HOLIDAY_HOURS;
         normalizedStartDateTime = FULL_DAY_START_TIME;
         normalizedEndDateTime = endTimeFromHourDecimal(holidayHours);
         normalizedHours = holidayHours;

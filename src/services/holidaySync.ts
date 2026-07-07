@@ -5,17 +5,10 @@ const HOLIDAY_PROJECT_ID = Number(process.env.HOLIDAY_PROJECT_ID ?? 1);
 const LEAVE_PROJECT_ID = Number(process.env.BAMBOOHR_LEAVE_PROJECT_ID ?? 2);
 const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const HOLIDAY_START_TIME = new Date("1970-01-01T09:00:00.000Z");
+const FULL_DAY_HOLIDAY_HOURS = 8;
 
 function dateKeyFromParts(year: number, month: number, day: number): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function isFriday(dateKey: string): boolean {
-  return new Date(`${dateKey}T00:00:00.000Z`).getUTCDay() === 5;
-}
-
-function getHolidayHours(dateKey: string): number {
-  return isFriday(dateKey) ? 7 : 8;
 }
 
 function getEndTime(hours: number): Date {
@@ -91,7 +84,7 @@ async function syncHolidayEntriesForEmployeeYear(
   for (const holiday of holidays) {
     const dateKey = dateKeyFromParts(year, holiday.month, holiday.day);
     const date = new Date(`${dateKey}T00:00:00.000Z`);
-    const hours = getHolidayHours(dateKey);
+    const hours = FULL_DAY_HOLIDAY_HOURS;
     const startTime = HOLIDAY_START_TIME;
     const endTime = getEndTime(hours);
     const notes = holiday.name ?? "Holiday";
@@ -132,7 +125,7 @@ async function syncHolidayEntriesForEmployeeYear(
       Number(existing[0].hours) === hours &&
       (existing[0].notes ?? "") === notes &&
       isTime(existing[0].start_time, 9, 0) &&
-      isTime(existing[0].end_time, hours === 7 ? 16 : 17, 0);
+      isTime(existing[0].end_time, 17, 0);
 
     if (hasOnlyMatchingHoliday) {
       summary.unchanged += 1;
