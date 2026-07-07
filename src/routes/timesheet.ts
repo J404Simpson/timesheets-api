@@ -167,6 +167,105 @@ const isLeaveEntryRecord = (entry: { project_id?: number | null; notes?: string 
   return (entry.notes ?? "").startsWith(LEAVE_NOTE_PREFIX);
 };
 
+type WeeklyHoursPayload = {
+  hours_monday: number;
+  hours_tuesday: number;
+  hours_wednesday: number;
+  hours_thursday: number;
+  hours_friday: number;
+  hours_saturday: number;
+  hours_sunday: number;
+};
+
+function toFiniteHourValue(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Number(parsed.toFixed(2));
+}
+
+function parseWeeklyHoursPayload(value: unknown): WeeklyHoursPayload | null {
+  const payload = value as Record<string, unknown> | null | undefined;
+  if (!payload) return null;
+
+  const hours_monday = toFiniteHourValue(payload.hours_monday);
+  const hours_tuesday = toFiniteHourValue(payload.hours_tuesday);
+  const hours_wednesday = toFiniteHourValue(payload.hours_wednesday);
+  const hours_thursday = toFiniteHourValue(payload.hours_thursday);
+  const hours_friday = toFiniteHourValue(payload.hours_friday);
+  const hours_saturday = toFiniteHourValue(payload.hours_saturday);
+  const hours_sunday = toFiniteHourValue(payload.hours_sunday);
+
+  if (
+    hours_monday == null ||
+    hours_tuesday == null ||
+    hours_wednesday == null ||
+    hours_thursday == null ||
+    hours_friday == null ||
+    hours_saturday == null ||
+    hours_sunday == null
+  ) {
+    return null;
+  }
+
+  return {
+    hours_monday,
+    hours_tuesday,
+    hours_wednesday,
+    hours_thursday,
+    hours_friday,
+    hours_saturday,
+    hours_sunday,
+  };
+}
+
+function calculateWeeklyHoursTotal(hours: WeeklyHoursPayload): number {
+  return Number((
+    hours.hours_monday +
+    hours.hours_tuesday +
+    hours.hours_wednesday +
+    hours.hours_thursday +
+    hours.hours_friday +
+    hours.hours_saturday +
+    hours.hours_sunday
+  ).toFixed(2));
+}
+
+function mapAdminEmployee(employee: {
+  id: number;
+  object_id: string;
+  email: string;
+  first_name: string | null;
+  last_name: string | null;
+  department_id: number | null;
+  hours: unknown;
+  hours_monday: unknown;
+  hours_tuesday: unknown;
+  hours_wednesday: unknown;
+  hours_thursday: unknown;
+  hours_friday: unknown;
+  hours_saturday: unknown;
+  hours_sunday: unknown;
+}) {
+  return {
+    id: employee.id,
+    object_id: employee.object_id,
+    email: employee.email,
+    first_name: employee.first_name,
+    last_name: employee.last_name,
+    department_id: employee.department_id,
+    hours: Number(employee.hours),
+    hours_monday: Number(employee.hours_monday),
+    hours_tuesday: Number(employee.hours_tuesday),
+    hours_wednesday: Number(employee.hours_wednesday),
+    hours_thursday: Number(employee.hours_thursday),
+    hours_friday: Number(employee.hours_friday),
+    hours_saturday: Number(employee.hours_saturday),
+    hours_sunday: Number(employee.hours_sunday),
+  };
+}
+
 export default async function timesheetRoutes(fastify: FastifyInstance, opts: FastifyPluginOptions) {
   // GET /me - return current authenticated employee profile
   fastify.get("/me", async (request, reply) => {
@@ -234,16 +333,102 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           email: true,
           object_id: true,
           department_id: true,
+          hours: true,
+          hours_monday: true,
+          hours_tuesday: true,
+          hours_wednesday: true,
+          hours_thursday: true,
+          hours_friday: true,
+          hours_saturday: true,
+          hours_sunday: true,
         },
         orderBy: [{ first_name: "asc" }, { last_name: "asc" }, { email: "asc" }],
       });
 
-      return reply.status(200).send({ users });
+      return reply.status(200).send({ users: users.map(mapAdminEmployee) });
     } catch (err) {
       fastify.log.error(err);
       return reply.status(500).send({ error: "Failed to fetch admin user list" });
     }
   });
+
+  fastify.patch(
+    "/admin/users/:id/hours",
+    async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply
+    ) => {
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      const employeeId = Number(request.params.id);
+      if (Number.isNaN(employeeId)) {
+        return reply.status(400).send({ error: "Employee id required" });
+      }
+
+      const weeklyHours = parseWeeklyHoursPayload(request.body);
+      if (!weeklyHours) {
+        return reply.status(400).send({ error: "All seven daily hours values are required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({
+          where: { object_id },
+          select: { admin: true },
+        });
+
+        if (!requester) {
+          return reply.status(404).send({ error: "Employee not found" });
+        }
+
+        if (requester.admin !== true) {
+          return reply.status(403).send({ error: "Admin access required" });
+        }
+
+        const existingEmployee = await prisma.employee.findUnique({
+          where: { id: employeeId },
+          select: { id: true },
+        });
+
+        if (!existingEmployee) {
+          return reply.status(404).send({ error: "Target employee not found" });
+        }
+
+        const totalHours = calculateWeeklyHoursTotal(weeklyHours);
+        const updatedEmployee = await prisma.employee.update({
+          where: { id: employeeId },
+          data: {
+            hours: totalHours,
+            ...weeklyHours,
+          },
+          select: {
+            id: true,
+            first_name: true,
+            last_name: true,
+            email: true,
+            object_id: true,
+            department_id: true,
+            hours: true,
+            hours_monday: true,
+            hours_tuesday: true,
+            hours_wednesday: true,
+            hours_thursday: true,
+            hours_friday: true,
+            hours_saturday: true,
+            hours_sunday: true,
+          },
+        });
+
+        return reply.status(200).send({ user: mapAdminEmployee(updatedEmployee) });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to update employee hours" });
+      }
+    }
+  );
 
   // GET /entries/week - return entries for the current (or specified) week for the authenticated user
   fastify.get("/entries/week", async (request, reply) => {

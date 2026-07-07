@@ -7,22 +7,29 @@ datasource db {
 }
 
 model employee {
-  id            Int         @id(map: "employee_pkey") @default(autoincrement())
-  object_id     String      @unique(map: "employee_object_id_key") @db.VarChar(255)
-  email         String      @unique(map: "employee_email_key") @db.VarChar(255)
-  bamboohr_id   Int?
-  first_name    String?     @db.VarChar(100)
-  last_name     String?     @db.VarChar(100)
-  tenant_id     String?     @db.VarChar(255)
-  hours         Int         @default(39)
-  created_at    DateTime?   @default(now()) @db.Timestamp(6)
-  updated_at    DateTime?   @default(now()) @db.Timestamp(6)
-  admin         Boolean?    @default(false)
-  region_id     Int?        @default(1)
-  department_id Int?
-  region        region?     @relation(fields: [region_id], references: [id], map: "fk_employee_region")
-  department    department? @relation(fields: [department_id], references: [id], map: "fk_employee_department")
-  entries       entry[]
+  id              Int         @id(map: "employee_pkey") @default(autoincrement())
+  object_id       String      @unique(map: "employee_object_id_key") @db.VarChar(255)
+  email           String      @unique(map: "employee_email_key") @db.VarChar(255)
+  bamboohr_id     Int?
+  first_name      String?     @db.VarChar(100)
+  last_name       String?     @db.VarChar(100)
+  tenant_id       String?     @db.VarChar(255)
+  hours           Decimal     @default(39) @db.Decimal(5, 2)
+  hours_monday    Decimal     @default(8) @db.Decimal(5, 2)
+  hours_tuesday   Decimal     @default(8) @db.Decimal(5, 2)
+  hours_wednesday Decimal     @default(8) @db.Decimal(5, 2)
+  hours_thursday  Decimal     @default(8) @db.Decimal(5, 2)
+  hours_friday    Decimal     @default(7) @db.Decimal(5, 2)
+  hours_saturday  Decimal     @default(0) @db.Decimal(5, 2)
+  hours_sunday    Decimal     @default(0) @db.Decimal(5, 2)
+  created_at      DateTime?   @default(now()) @db.Timestamp(6)
+  updated_at      DateTime?   @default(now()) @db.Timestamp(6)
+  admin           Boolean?    @default(false)
+  region_id       Int?        @default(1)
+  department_id   Int?
+  region          region?     @relation(fields: [region_id], references: [id], map: "fk_employee_region")
+  department      department? @relation(fields: [department_id], references: [id], map: "fk_employee_department")
+  entries         entry[]
 
   @@map("employee")
 }
@@ -98,6 +105,7 @@ model task {
 model department {
   id               Int               @id @default(autoincrement())
   name             String            @unique @db.VarChar(255)
+  qualifying_percentage Decimal      @default(1.0) @db.Decimal(5, 4)
   employees        employee[]
   tasks            task[]
   department_tasks department_task[]
