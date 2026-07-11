@@ -1192,7 +1192,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         let tasks;
         if (includeInactiveFlag) {
           tasks = await prisma.$queryRaw`
-            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
@@ -1209,7 +1209,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           `;
         } else {
           tasks = await prisma.$queryRaw`
-            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
@@ -1267,11 +1267,15 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           name: true,
           enabled: true,
           active: true,
-          department_id: true,
           task_type: true,
           phase_tasks: {
             select: {
               phase: { select: { id: true, name: true } },
+            },
+          },
+          department_tasks: {
+            select: {
+              department: { select: { id: true, name: true } },
             },
           },
         },
@@ -1283,9 +1287,9 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         name: t.name,
         enabled: t.enabled,
         active: t.active,
-        department_id: t.department_id,
         task_type: t.task_type,
         phases: t.phase_tasks.map((pt) => ({ id: pt.phase.id, name: pt.phase.name })),
+        departments: t.department_tasks.map((dt) => ({ id: dt.department.id, name: dt.department.name })),
       }));
 
       return reply.status(200).send({ tasks: mapped });
@@ -1354,7 +1358,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         const task = await prisma.task.create({
           data: {
             name: name.trim(),
-            department_id,
             task_type: "PROJECT",
             active: true, // Default to active
             enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (qualifying)
@@ -1364,7 +1367,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             name: true,
             enabled: true,
             active: true,
-            department_id: true,
             task_type: true,
           },
         });
@@ -1562,7 +1564,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             name: true,
             enabled: true,
             active: true,
-            department_id: true,
             task_type: true,
           },
         });
@@ -1616,7 +1617,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             name: true,
             enabled: true,
             active: true,
-            department_id: true,
             task_type: true,
           },
         });
@@ -1670,7 +1670,6 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             name: true,
             enabled: true,
             active: true,
-            department_id: true,
             task_type: true,
           },
         });
