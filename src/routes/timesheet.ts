@@ -228,6 +228,19 @@ function calculateWeeklyHoursTotal(hours: WeeklyHoursPayload): number {
   ).toFixed(2));
 }
 
+function parseDepartmentId(value: unknown): number | null {
+  if (value == null || value === "") {
+    return null;
+  }
+
+  const departmentId = Number(value);
+  if (!Number.isInteger(departmentId) || departmentId <= 0) {
+    return null;
+  }
+
+  return departmentId;
+}
+
 function mapAdminEmployee(employee: {
   id: number;
   object_id: string;
@@ -370,6 +383,11 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "All seven daily hours values are required" });
       }
 
+      const departmentId = parseDepartmentId((request.body as { department_id?: unknown })?.department_id);
+      if (departmentId == null) {
+        return reply.status(400).send({ error: "Valid department id required" });
+      }
+
       try {
         const requester = await prisma.employee.findUnique({
           where: { object_id },
@@ -393,10 +411,20 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           return reply.status(404).send({ error: "Target employee not found" });
         }
 
+        const existingDepartment = await prisma.department.findUnique({
+          where: { id: departmentId },
+          select: { id: true },
+        });
+
+        if (!existingDepartment) {
+          return reply.status(404).send({ error: "Department not found" });
+        }
+
         const totalHours = calculateWeeklyHoursTotal(weeklyHours);
         const updatedEmployee = await prisma.employee.update({
           where: { id: employeeId },
           data: {
+            department_id: departmentId,
             hours: totalHours,
             ...weeklyHours,
           },
