@@ -1369,11 +1369,18 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           },
         });
 
-        // Link task to phase
+        // Link task to phase and department (both required for employee task visibility)
         await prisma.phase_task.create({
           data: {
             task_id: task.id,
             phase_id,
+          },
+        });
+
+        await prisma.department_task.create({
+          data: {
+            task_id: task.id,
+            department_id,
           },
         });
 
