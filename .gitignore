@@ -5,3 +5,5 @@ docker-compose.yml
 *.key
 *.publishsettings
 node_modules/
+
+.DS_Store
