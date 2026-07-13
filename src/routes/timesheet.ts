@@ -228,6 +228,107 @@ function calculateWeeklyHoursTotal(hours: WeeklyHoursPayload): number {
   ).toFixed(2));
 }
 
+type TaskNameMatch = {
+  id: number;
+  name: string;
+};
+
+type ScoredTaskNameMatch = TaskNameMatch & {
+  score: number;
+};
+
+function normalizeTaskNameForComparison(name: string): string {
+  return name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildBigrams(value: string): Set<string> {
+  const padded = ` ${value} `;
+  const grams = new Set<string>();
+  for (let i = 0; i < padded.length - 1; i += 1) {
+    grams.add(padded.slice(i, i + 2));
+  }
+  return grams;
+}
+
+function diceCoefficient(a: string, b: string): number {
+  if (a === b) return 1;
+  if (!a || !b) return 0;
+
+  const aBigrams = buildBigrams(a);
+  const bBigrams = buildBigrams(b);
+  let overlap = 0;
+
+  for (const gram of aBigrams) {
+    if (bBigrams.has(gram)) overlap += 1;
+  }
+
+  return (2 * overlap) / (aBigrams.size + bBigrams.size);
+}
+
+function getTaskNameSimilarity(candidate: string, existing: string): number {
+  const dice = diceCoefficient(candidate, existing);
+  const containmentBoost =
+    candidate.includes(existing) || existing.includes(candidate) ? 0.86 : 0;
+  return Math.max(dice, containmentBoost);
+}
+
+async function findTaskNameConflicts(
+  candidateName: string,
+  excludeTaskId?: number
+): Promise<{ exact: TaskNameMatch | null; similar: TaskNameMatch[] }> {
+  const normalizedCandidate = normalizeTaskNameForComparison(candidateName);
+  if (!normalizedCandidate) {
+    return { exact: null, similar: [] };
+  }
+
+  const tasks = await prisma.task.findMany({
+    select: {
+      id: true,
+      name: true,
+    },
+  });
+
+  const comparableTasks = tasks.filter((task) => task.id !== excludeTaskId);
+
+  const exact = comparableTasks.find(
+    (task) => normalizeTaskNameForComparison(task.name) === normalizedCandidate
+  );
+
+  const similarScored: ScoredTaskNameMatch[] = comparableTasks
+    .map((task) => {
+      const normalizedExisting = normalizeTaskNameForComparison(task.name);
+      if (!normalizedExisting || normalizedExisting === normalizedCandidate) {
+        return null;
+      }
+
+      const score = getTaskNameSimilarity(normalizedCandidate, normalizedExisting);
+      if (score < 0.86) {
+        return null;
+      }
+
+      return { id: task.id, name: task.name, score };
+    })
+    .filter((match): match is ScoredTaskNameMatch => match != null)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
+
+  const similar = similarScored.map(({ id, name }) => ({ id, name }));
+
+  return {
+    exact: exact ? { id: exact.id, name: exact.name } : null,
+    similar,
+  };
+}
+
+function formatSimilarTaskNames(matches: TaskNameMatch[]): string {
+  return matches.map((match) => match.name).join(", ");
+}
+
 function parseDepartmentId(value: unknown): number | null {
   if (value == null || value === "") {
     return null;
@@ -1303,10 +1404,10 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.post(
     "/tasks",
     async (
-      request: FastifyRequest<{ Body: { name?: string; department_id?: number; department_ids?: number[]; phase_id?: number; enabled?: boolean } }>,
+      request: FastifyRequest<{ Body: { name?: string; department_id?: number; department_ids?: number[]; phase_id?: number; enabled?: boolean; allowSimilarName?: boolean } }>,
       reply: FastifyReply
     ) => {
-      const { name, department_id, department_ids, phase_id, enabled } = request.body ?? {};
+      const { name, department_id, department_ids, phase_id, enabled, allowSimilarName } = request.body ?? {};
 
       // Backward compatibility: accept legacy single department_id as a one-item array.
       const normalizedDepartmentIds = Array.isArray(department_ids)
@@ -1344,6 +1445,19 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         if (!requester) return reply.status(404).send({ error: "Employee not found" });
         if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
 
+        const trimmedName = name.trim();
+        const conflicts = await findTaskNameConflicts(trimmedName);
+        if (conflicts.exact) {
+          return reply.status(409).send({
+            error: `Task name already exists: ${conflicts.exact.name}`,
+          });
+        }
+        if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+          return reply.status(409).send({
+            error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+          });
+        }
+
         // Verify all departments exist
         const existingDepartments = await prisma.department.findMany({
           where: { id: { in: normalizedDepartmentIds } },
@@ -1365,7 +1479,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         // Create the task
         const task = await prisma.task.create({
           data: {
-            name: name.trim(),
+            name: trimmedName,
             task_type: "PROJECT",
             active: true, // Default to active
             enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (qualifying)
@@ -1411,10 +1525,10 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.post(
     "/tasks/sustaining",
     async (
-      request: FastifyRequest<{ Body: { name?: string; department_ids?: number[]; enabled?: boolean } }>,
+      request: FastifyRequest<{ Body: { name?: string; department_ids?: number[]; enabled?: boolean; allowSimilarName?: boolean } }>,
       reply: FastifyReply
     ) => {
-      const { name, department_ids, enabled } = request.body ?? {};
+      const { name, department_ids, enabled, allowSimilarName } = request.body ?? {};
 
       if (!name || typeof name !== "string" || !name.trim()) {
         return reply.status(400).send({ error: "Task name is required" });
@@ -1438,6 +1552,19 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         if (!requester) return reply.status(404).send({ error: "Employee not found" });
         if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
 
+        const trimmedName = name.trim();
+        const conflicts = await findTaskNameConflicts(trimmedName);
+        if (conflicts.exact) {
+          return reply.status(409).send({
+            error: `Task name already exists: ${conflicts.exact.name}`,
+          });
+        }
+        if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+          return reply.status(409).send({
+            error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+          });
+        }
+
         // Verify all departments exist
         const existingDepts = await prisma.department.findMany({
           where: { id: { in: department_ids } },
@@ -1450,7 +1577,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         // Create the sustaining task
         const task = await prisma.task.create({
           data: {
-            name: name.trim(),
+            name: trimmedName,
             task_type: "SUSTAINING",
             active: true,
             enabled: typeof enabled === "boolean" ? enabled : true,
@@ -1641,7 +1768,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.patch(
     "/tasks/:id/name",
     async (
-      request: FastifyRequest<{ Params: { id: string }; Body: { name?: string } }>,
+      request: FastifyRequest<{ Params: { id: string }; Body: { name?: string; allowSimilarName?: boolean } }>,
       reply: FastifyReply
     ) => {
       const taskId = Number(request.params.id);
@@ -1649,7 +1776,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "Task id required" });
       }
 
-      const { name } = request.body ?? {};
+      const { name, allowSimilarName } = request.body ?? {};
       if (!name || typeof name !== "string" || !name.trim()) {
         return reply.status(400).send({ error: "Task name is required" });
       }
@@ -1670,9 +1797,22 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           return reply.status(404).send({ error: "Task not found" });
         }
 
+        const trimmedName = name.trim();
+        const conflicts = await findTaskNameConflicts(trimmedName, taskId);
+        if (conflicts.exact) {
+          return reply.status(409).send({
+            error: `Task name already exists: ${conflicts.exact.name}`,
+          });
+        }
+        if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+          return reply.status(409).send({
+            error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+          });
+        }
+
         const task = await prisma.task.update({
           where: { id: taskId },
-          data: { name: name.trim() },
+          data: { name: trimmedName },
           select: {
             id: true,
             name: true,
