@@ -1303,18 +1303,26 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.post(
     "/tasks",
     async (
-      request: FastifyRequest<{ Body: { name?: string; department_id?: number; phase_id?: number; enabled?: boolean } }>,
+      request: FastifyRequest<{ Body: { name?: string; department_id?: number; department_ids?: number[]; phase_id?: number; enabled?: boolean } }>,
       reply: FastifyReply
     ) => {
-      const { name, department_id, phase_id, enabled } = request.body ?? {};
+      const { name, department_id, department_ids, phase_id, enabled } = request.body ?? {};
+
+      // Backward compatibility: accept legacy single department_id as a one-item array.
+      const normalizedDepartmentIds = Array.isArray(department_ids)
+        ? Array.from(new Set(department_ids))
+        : (typeof department_id === "number" ? [department_id] : []);
 
       // Validate required fields
       if (!name || typeof name !== "string" || !name.trim()) {
         return reply.status(400).send({ error: "Task name is required" });
       }
 
-      if (typeof department_id !== "number" || Number.isNaN(department_id)) {
-        return reply.status(400).send({ error: "Department id is required" });
+      if (
+        normalizedDepartmentIds.length === 0 ||
+        normalizedDepartmentIds.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)
+      ) {
+        return reply.status(400).send({ error: "At least one valid department id is required" });
       }
 
       if (typeof phase_id !== "number" || Number.isNaN(phase_id)) {
@@ -1336,13 +1344,13 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         if (!requester) return reply.status(404).send({ error: "Employee not found" });
         if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
 
-        // Verify department exists
-        const department = await prisma.department.findUnique({
-          where: { id: department_id },
+        // Verify all departments exist
+        const existingDepartments = await prisma.department.findMany({
+          where: { id: { in: normalizedDepartmentIds } },
           select: { id: true },
         });
-        if (!department) {
-          return reply.status(400).send({ error: "Department not found" });
+        if (existingDepartments.length !== normalizedDepartmentIds.length) {
+          return reply.status(400).send({ error: "One or more departments not found" });
         }
 
         // Verify phase exists
@@ -1379,15 +1387,15 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           },
         });
 
-        await prisma.department_task.create({
-          data: {
+        await prisma.department_task.createMany({
+          data: normalizedDepartmentIds.map((deptId) => ({
             task_id: task.id,
-            department_id,
-          },
+            department_id: deptId,
+          })),
         });
 
         fastify.log.info(
-          { action: "createTaskSuccess", taskId: task.id, department_id, phase_id, object_id },
+          { action: "createTaskSuccess", taskId: task.id, department_ids: normalizedDepartmentIds, phase_id, object_id },
           "Task created successfully"
         );
 
@@ -1678,6 +1686,97 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       } catch (err) {
         fastify.log.error(err);
         return reply.status(500).send({ error: "Failed to update task name" });
+      }
+    }
+  );
+
+  // PATCH /tasks/:id/departments - replace task department assignments (admin only)
+  fastify.patch(
+    "/tasks/:id/departments",
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { department_ids?: number[] } }>,
+      reply: FastifyReply
+    ) => {
+      const taskId = Number(request.params.id);
+      if (Number.isNaN(taskId)) {
+        return reply.status(400).send({ error: "Task id required" });
+      }
+
+      const { department_ids } = request.body ?? {};
+      if (
+        !Array.isArray(department_ids) ||
+        department_ids.length === 0 ||
+        department_ids.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)
+      ) {
+        return reply.status(400).send({ error: "At least one valid department id is required" });
+      }
+
+      const normalizedDepartmentIds = Array.from(new Set(department_ids));
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({ where: { object_id }, select: { admin: true } });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId }, select: { id: true } });
+        if (!existingTask) {
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        const existingDepartments = await prisma.department.findMany({
+          where: { id: { in: normalizedDepartmentIds } },
+          select: { id: true },
+        });
+        if (existingDepartments.length !== normalizedDepartmentIds.length) {
+          return reply.status(400).send({ error: "One or more departments not found" });
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.department_task.deleteMany({ where: { task_id: taskId } });
+          await tx.department_task.createMany({
+            data: normalizedDepartmentIds.map((deptId) => ({ department_id: deptId, task_id: taskId })),
+          });
+        });
+
+        const task = await prisma.task.findUnique({
+          where: { id: taskId },
+          select: {
+            id: true,
+            name: true,
+            enabled: true,
+            active: true,
+            task_type: true,
+            department_tasks: {
+              select: {
+                department: { select: { id: true, name: true } },
+              },
+            },
+          },
+        });
+
+        if (!task) {
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        return reply.status(200).send({
+          task: {
+            id: task.id,
+            name: task.name,
+            enabled: task.enabled,
+            active: task.active,
+            task_type: task.task_type,
+            departments: task.department_tasks.map((dt) => ({ id: dt.department.id, name: dt.department.name })),
+          },
+        });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to update task departments" });
       }
     }
   );
