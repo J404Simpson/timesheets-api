@@ -1404,15 +1404,20 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
   fastify.post(
     "/tasks",
     async (
-      request: FastifyRequest<{ Body: { name?: string; department_id?: number; department_ids?: number[]; phase_id?: number; enabled?: boolean; allowSimilarName?: boolean } }>,
+      request: FastifyRequest<{ Body: { name?: string; department_id?: number; department_ids?: number[]; phase_id?: number; phase_ids?: number[]; enabled?: boolean; allowSimilarName?: boolean } }>,
       reply: FastifyReply
     ) => {
-      const { name, department_id, department_ids, phase_id, enabled, allowSimilarName } = request.body ?? {};
+      const { name, department_id, department_ids, phase_id, phase_ids, enabled, allowSimilarName } = request.body ?? {};
 
       // Backward compatibility: accept legacy single department_id as a one-item array.
       const normalizedDepartmentIds = Array.isArray(department_ids)
         ? Array.from(new Set(department_ids))
         : (typeof department_id === "number" ? [department_id] : []);
+
+      // Backward compatibility: accept legacy single phase_id as a one-item array.
+      const normalizedPhaseIds = Array.isArray(phase_ids)
+        ? Array.from(new Set(phase_ids))
+        : (typeof phase_id === "number" ? [phase_id] : []);
 
       // Validate required fields
       if (!name || typeof name !== "string" || !name.trim()) {
@@ -1426,8 +1431,11 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
         return reply.status(400).send({ error: "At least one valid department id is required" });
       }
 
-      if (typeof phase_id !== "number" || Number.isNaN(phase_id)) {
-        return reply.status(400).send({ error: "Phase id is required" });
+      if (
+        normalizedPhaseIds.length === 0 ||
+        normalizedPhaseIds.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)
+      ) {
+        return reply.status(400).send({ error: "At least one valid phase id is required" });
       }
 
       const user = (request as any).user;
@@ -1467,13 +1475,13 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           return reply.status(400).send({ error: "One or more departments not found" });
         }
 
-        // Verify phase exists
-        const phase = await prisma.phase.findUnique({
-          where: { id: phase_id },
+        // Verify phases exist
+        const existingPhases = await prisma.phase.findMany({
+          where: { id: { in: normalizedPhaseIds } },
           select: { id: true },
         });
-        if (!phase) {
-          return reply.status(400).send({ error: "Phase not found" });
+        if (existingPhases.length !== normalizedPhaseIds.length) {
+          return reply.status(400).send({ error: "One or more phases not found" });
         }
 
         // Create the task
@@ -1493,12 +1501,13 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           },
         });
 
-        // Link task to phase and department (both required for employee task visibility)
-        await prisma.phase_task.create({
-          data: {
+        // Link task to phases and departments (both required for employee task visibility)
+        await prisma.phase_task.createMany({
+          data: normalizedPhaseIds.map((phaseId) => ({
             task_id: task.id,
-            phase_id,
-          },
+            phase_id: phaseId,
+          })),
+          skipDuplicates: true,
         });
 
         await prisma.department_task.createMany({
@@ -1506,10 +1515,11 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
             task_id: task.id,
             department_id: deptId,
           })),
+          skipDuplicates: true,
         });
 
         fastify.log.info(
-          { action: "createTaskSuccess", taskId: task.id, department_ids: normalizedDepartmentIds, phase_id, object_id },
+          { action: "createTaskSuccess", taskId: task.id, department_ids: normalizedDepartmentIds, phase_ids: normalizedPhaseIds, object_id },
           "Task created successfully"
         );
 
@@ -1917,6 +1927,98 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       } catch (err) {
         fastify.log.error(err);
         return reply.status(500).send({ error: "Failed to update task departments" });
+      }
+    }
+  );
+
+  // PATCH /tasks/:id/phases - replace task phase assignments (admin only)
+  fastify.patch(
+    "/tasks/:id/phases",
+    async (
+      request: FastifyRequest<{ Params: { id: string }; Body: { phase_ids?: number[] } }>,
+      reply: FastifyReply
+    ) => {
+      const taskId = Number(request.params.id);
+      if (Number.isNaN(taskId)) {
+        return reply.status(400).send({ error: "Task id required" });
+      }
+
+      const { phase_ids } = request.body ?? {};
+      if (
+        !Array.isArray(phase_ids) ||
+        phase_ids.length === 0 ||
+        phase_ids.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)
+      ) {
+        return reply.status(400).send({ error: "At least one valid phase id is required" });
+      }
+
+      const normalizedPhaseIds = Array.from(new Set(phase_ids));
+
+      const user = (request as any).user;
+      const object_id = user?.oid;
+      if (!object_id) {
+        return reply.status(401).send({ error: "Authenticated user required" });
+      }
+
+      try {
+        const requester = await prisma.employee.findUnique({ where: { object_id }, select: { admin: true } });
+        if (!requester) return reply.status(404).send({ error: "Employee not found" });
+        if (requester.admin !== true) return reply.status(403).send({ error: "Admin access required" });
+
+        const existingTask = await prisma.task.findUnique({ where: { id: taskId }, select: { id: true } });
+        if (!existingTask) {
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        const existingPhases = await prisma.phase.findMany({
+          where: { id: { in: normalizedPhaseIds } },
+          select: { id: true },
+        });
+        if (existingPhases.length !== normalizedPhaseIds.length) {
+          return reply.status(400).send({ error: "One or more phases not found" });
+        }
+
+        await prisma.$transaction(async (tx) => {
+          await tx.phase_task.deleteMany({ where: { task_id: taskId } });
+          await tx.phase_task.createMany({
+            data: normalizedPhaseIds.map((phaseId) => ({ phase_id: phaseId, task_id: taskId })),
+            skipDuplicates: true,
+          });
+        });
+
+        const task = await prisma.task.findUnique({
+          where: { id: taskId },
+          select: {
+            id: true,
+            name: true,
+            enabled: true,
+            active: true,
+            task_type: true,
+            phase_tasks: {
+              select: {
+                phase: { select: { id: true, name: true } },
+              },
+            },
+          },
+        });
+
+        if (!task) {
+          return reply.status(404).send({ error: "Task not found" });
+        }
+
+        return reply.status(200).send({
+          task: {
+            id: task.id,
+            name: task.name,
+            enabled: task.enabled,
+            active: task.active,
+            task_type: task.task_type,
+            phases: task.phase_tasks.map((pt) => ({ id: pt.phase.id, name: pt.phase.name })),
+          },
+        });
+      } catch (err) {
+        fastify.log.error(err);
+        return reply.status(500).send({ error: "Failed to update task phases" });
       }
     }
   );
