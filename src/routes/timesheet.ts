@@ -125,6 +125,9 @@ function isPastPreviousWeekCutoffForClient(offsetMinutes: number): boolean {
   return dow === 0 || dow >= 3;
 }
 
+// Temporary feature flag: disable previous-week Tuesday cutoff checks.
+const ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF = false;
+
 function isEarlierThanPreviousWeekForClient(dateKey: string, offsetMinutes: number): boolean {
   const entryDay = dateKeyToDayNumber(dateKey);
   if (entryDay == null) return false;
@@ -2145,6 +2148,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       if (
         employee.admin !== true &&
+        ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF &&
         isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
         isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)
       ) {
@@ -2410,6 +2414,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       if (
         employee.admin !== true &&
+        ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF &&
         isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
         (
           isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
