@@ -2126,9 +2126,38 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
     }
 
     try {
-      const employee = await prisma.employee.findUnique({ where: { object_id } });
-      if (!employee) {
+      const requesterEmployee = await prisma.employee.findUnique({
+        where: { object_id },
+        select: { id: true, admin: true, department_id: true, region_id: true },
+      });
+      if (!requesterEmployee) {
         return reply.status(404).send({ error: "Employee not found" });
+      }
+
+      const { employeeId } = request.query as { employeeId?: string };
+      const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
+
+      let targetEmployeeId = requesterEmployee.id;
+      let targetEmployeeDepartmentId = requesterEmployee.department_id;
+      let targetEmployeeRegionId = requesterEmployee.region_id ?? 1;
+
+      if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
+        if (requestedEmployeeId !== requesterEmployee.id && requesterEmployee.admin !== true) {
+          return reply.status(403).send({ error: "Admin access required" });
+        }
+
+        const targetEmployee = await prisma.employee.findUnique({
+          where: { id: requestedEmployeeId },
+          select: { id: true, department_id: true, region_id: true },
+        });
+
+        if (!targetEmployee) {
+          return reply.status(404).send({ error: "Target employee not found" });
+        }
+
+        targetEmployeeId = targetEmployee.id;
+        targetEmployeeDepartmentId = targetEmployee.department_id;
+        targetEmployeeRegionId = targetEmployee.region_id ?? 1;
       }
 
       const timezoneOffsetMinutes = getClientTimezoneOffsetMinutes(request);
@@ -2138,7 +2167,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       }
 
       if (
-        employee.admin !== true &&
+        requesterEmployee.admin !== true &&
         isEarlierThanPreviousWeekForClient(policyDateKey, timezoneOffsetMinutes)
       ) {
         return reply.status(403).send({
@@ -2147,7 +2176,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       }
 
       if (
-        employee.admin !== true &&
+        requesterEmployee.admin !== true &&
         ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF &&
         isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
         isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)
@@ -2192,7 +2221,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
       const isProtectedAbsenceRequest = PROTECTED_PROJECT_IDS.has(projectIdNumber);
       const isLeaveRequest = projectIdNumber === LEAVE_PROJECT_ID;
       const isHolidayRequest = projectIdNumber === HOLIDAY_PROJECT_ID;
-      const regionHoliday = await findRegionHolidayForDate(employee.region_id ?? 1, policyDateKey);
+      const regionHoliday = await findRegionHolidayForDate(targetEmployeeRegionId, policyDateKey);
 
       if (!isProtectedAbsenceRequest && regionHoliday) {
         return reply.status(409).send({
@@ -2202,7 +2231,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       const overlapping = await prisma.entry.findMany({
         where: {
-          employee_id: employee.id,
+          employee_id: targetEmployeeId,
           date: entryDate,
           start_time: { lt: endDateTime },
           end_time: { gt: startDateTime },
@@ -2271,7 +2300,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
           return reply.status(400).send({ error: "A valid phase is required when selecting a task" });
         }
 
-        if (employee.department_id == null) {
+        if (targetEmployeeDepartmentId == null) {
           return reply.status(400).send({ error: "Employee department is required to select a task" });
         }
 
@@ -2283,7 +2312,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
               some: { phase_id: normalizedPhaseId },
             },
             department_tasks: {
-              some: { department_id: employee.department_id },
+              some: { department_id: targetEmployeeDepartmentId },
             },
           },
           select: { id: true },
@@ -2315,7 +2344,7 @@ export default async function timesheetRoutes(fastify: FastifyInstance, opts: Fa
 
       const created = await prisma.entry.create({
         data: {
-          employee_id: employee.id,
+          employee_id: targetEmployeeId,
           project_id: projectIdNumber,
           task_id: normalizedTaskId,
           project_phase_id: projectPhaseId,

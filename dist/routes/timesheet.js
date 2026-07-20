@@ -114,6 +114,8 @@ function isPastPreviousWeekCutoffForClient(offsetMinutes) {
     // Block on Sunday (0) and Wednesday-Saturday (3-6).
     return dow === 0 || dow >= 3;
 }
+// Temporary feature flag: disable previous-week Tuesday cutoff checks.
+const ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF = false;
 function isEarlierThanPreviousWeekForClient(dateKey, offsetMinutes) {
     const entryDay = dateKeyToDayNumber(dateKey);
     if (entryDay == null)
@@ -191,6 +193,88 @@ function calculateWeeklyHoursTotal(hours) {
         hours.hours_friday +
         hours.hours_saturday +
         hours.hours_sunday).toFixed(2));
+}
+function normalizeTaskNameForComparison(name) {
+    return name
+        .toLowerCase()
+        .normalize("NFKD")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+function buildBigrams(value) {
+    const padded = ` ${value} `;
+    const grams = new Set();
+    for (let i = 0; i < padded.length - 1; i += 1) {
+        grams.add(padded.slice(i, i + 2));
+    }
+    return grams;
+}
+function diceCoefficient(a, b) {
+    if (a === b)
+        return 1;
+    if (!a || !b)
+        return 0;
+    const aBigrams = buildBigrams(a);
+    const bBigrams = buildBigrams(b);
+    let overlap = 0;
+    for (const gram of aBigrams) {
+        if (bBigrams.has(gram))
+            overlap += 1;
+    }
+    return (2 * overlap) / (aBigrams.size + bBigrams.size);
+}
+function getTaskNameSimilarity(candidate, existing) {
+    const dice = diceCoefficient(candidate, existing);
+    const containmentBoost = candidate.includes(existing) || existing.includes(candidate) ? 0.86 : 0;
+    return Math.max(dice, containmentBoost);
+}
+async function findTaskNameConflicts(candidateName, excludeTaskId) {
+    const normalizedCandidate = normalizeTaskNameForComparison(candidateName);
+    if (!normalizedCandidate) {
+        return { exact: null, similar: [] };
+    }
+    const tasks = await prismaClient_1.default.task.findMany({
+        select: {
+            id: true,
+            name: true,
+        },
+    });
+    const comparableTasks = tasks.filter((task) => task.id !== excludeTaskId);
+    const exact = comparableTasks.find((task) => normalizeTaskNameForComparison(task.name) === normalizedCandidate);
+    const similarScored = comparableTasks
+        .map((task) => {
+        const normalizedExisting = normalizeTaskNameForComparison(task.name);
+        if (!normalizedExisting || normalizedExisting === normalizedCandidate) {
+            return null;
+        }
+        const score = getTaskNameSimilarity(normalizedCandidate, normalizedExisting);
+        if (score < 0.86) {
+            return null;
+        }
+        return { id: task.id, name: task.name, score };
+    })
+        .filter((match) => match != null)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5);
+    const similar = similarScored.map(({ id, name }) => ({ id, name }));
+    return {
+        exact: exact ? { id: exact.id, name: exact.name } : null,
+        similar,
+    };
+}
+function formatSimilarTaskNames(matches) {
+    return matches.map((match) => match.name).join(", ");
+}
+function parseDepartmentId(value) {
+    if (value == null || value === "") {
+        return null;
+    }
+    const departmentId = Number(value);
+    if (!Number.isInteger(departmentId) || departmentId <= 0) {
+        return null;
+    }
+    return departmentId;
 }
 function mapAdminEmployee(employee) {
     return {
@@ -302,6 +386,10 @@ async function timesheetRoutes(fastify, opts) {
         if (!weeklyHours) {
             return reply.status(400).send({ error: "All seven daily hours values are required" });
         }
+        const departmentId = parseDepartmentId(request.body?.department_id);
+        if (departmentId == null) {
+            return reply.status(400).send({ error: "Valid department id required" });
+        }
         try {
             const requester = await prismaClient_1.default.employee.findUnique({
                 where: { object_id },
@@ -320,10 +408,18 @@ async function timesheetRoutes(fastify, opts) {
             if (!existingEmployee) {
                 return reply.status(404).send({ error: "Target employee not found" });
             }
+            const existingDepartment = await prismaClient_1.default.department.findUnique({
+                where: { id: departmentId },
+                select: { id: true },
+            });
+            if (!existingDepartment) {
+                return reply.status(404).send({ error: "Department not found" });
+            }
             const totalHours = calculateWeeklyHoursTotal(weeklyHours);
             const updatedEmployee = await prismaClient_1.default.employee.update({
                 where: { id: employeeId },
                 data: {
+                    department_id: departmentId,
                     hours: totalHours,
                     ...weeklyHours,
                 },
@@ -986,12 +1082,50 @@ async function timesheetRoutes(fastify, opts) {
             return reply.status(400).send({ error: "projectId and phaseId are required" });
         }
         try {
-            const { includeInactive } = request.query;
+            const { includeInactive, forEntry, employeeId } = request.query;
             const includeInactiveFlag = includeInactive === "true";
+            const forEntryFlag = forEntry === "true";
+            let departmentIdFilter = null;
+            if (forEntryFlag) {
+                const user = request.user;
+                const object_id = user?.oid;
+                if (!object_id) {
+                    return reply.status(401).send({ error: "Authenticated user required" });
+                }
+                const requester = await prismaClient_1.default.employee.findUnique({
+                    where: { object_id },
+                    select: { id: true, admin: true, department_id: true },
+                });
+                if (!requester) {
+                    return reply.status(404).send({ error: "Employee not found" });
+                }
+                let targetEmployeeId = requester.id;
+                const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
+                if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
+                    if (requestedEmployeeId !== requester.id && requester.admin !== true) {
+                        return reply.status(403).send({ error: "Admin access required to query another employee" });
+                    }
+                    const targetEmployee = await prismaClient_1.default.employee.findUnique({
+                        where: { id: requestedEmployeeId },
+                        select: { id: true, department_id: true },
+                    });
+                    if (!targetEmployee) {
+                        return reply.status(404).send({ error: "Target employee not found" });
+                    }
+                    targetEmployeeId = targetEmployee.id;
+                    departmentIdFilter = targetEmployee.department_id ?? null;
+                }
+                else {
+                    departmentIdFilter = requester.department_id ?? null;
+                }
+                if (targetEmployeeId <= 0) {
+                    return reply.status(400).send({ error: "Invalid target employee" });
+                }
+            }
             let tasks;
             if (includeInactiveFlag) {
                 tasks = await prismaClient_1.default.$queryRaw `
-            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
@@ -1004,12 +1138,21 @@ async function timesheetRoutes(fastify, opts) {
             WHERE pp.project_id = ${projectId}
               AND pt.phase_id = ${phaseId}
               AND pp.active = true
+              AND (
+                ${departmentIdFilter}::int IS NULL
+                OR EXISTS (
+                  SELECT 1
+                  FROM department_task dt
+                  WHERE dt.task_id = t.id
+                    AND dt.department_id = ${departmentIdFilter}::int
+                )
+              )
             ORDER BY t.name ASC
           `;
             }
             else {
                 tasks = await prismaClient_1.default.$queryRaw `
-            SELECT t.id, t.name, t.enabled, t.department_id, t.active, t.task_type,
+            SELECT t.id, t.name, t.enabled, t.active, t.task_type,
               (
                 SELECT json_agg(json_build_object('id', d.id, 'name', d.name) ORDER BY d.name)
                 FROM department_task dt2
@@ -1023,6 +1166,15 @@ async function timesheetRoutes(fastify, opts) {
               AND pt.phase_id = ${phaseId}
               AND pp.active = true
               AND t.active = true
+              AND (
+                ${departmentIdFilter}::int IS NULL
+                OR EXISTS (
+                  SELECT 1
+                  FROM department_task dt
+                  WHERE dt.task_id = t.id
+                    AND dt.department_id = ${departmentIdFilter}::int
+                )
+              )
             ORDER BY t.name ASC
           `;
             }
@@ -1060,11 +1212,15 @@ async function timesheetRoutes(fastify, opts) {
                     name: true,
                     enabled: true,
                     active: true,
-                    department_id: true,
                     task_type: true,
                     phase_tasks: {
                         select: {
                             phase: { select: { id: true, name: true } },
+                        },
+                    },
+                    department_tasks: {
+                        select: {
+                            department: { select: { id: true, name: true } },
                         },
                     },
                 },
@@ -1075,9 +1231,9 @@ async function timesheetRoutes(fastify, opts) {
                 name: t.name,
                 enabled: t.enabled,
                 active: t.active,
-                department_id: t.department_id,
                 task_type: t.task_type,
                 phases: t.phase_tasks.map((pt) => ({ id: pt.phase.id, name: pt.phase.name })),
+                departments: t.department_tasks.map((dt) => ({ id: dt.department.id, name: dt.department.name })),
             }));
             return reply.status(200).send({ tasks: mapped });
         }
@@ -1088,16 +1244,26 @@ async function timesheetRoutes(fastify, opts) {
     });
     // POST /tasks - create a new task (admin only)
     fastify.post("/tasks", async (request, reply) => {
-        const { name, department_id, phase_id, enabled } = request.body ?? {};
+        const { name, department_id, department_ids, phase_id, phase_ids, enabled, allowSimilarName } = request.body ?? {};
+        // Backward compatibility: accept legacy single department_id as a one-item array.
+        const normalizedDepartmentIds = Array.isArray(department_ids)
+            ? Array.from(new Set(department_ids))
+            : (typeof department_id === "number" ? [department_id] : []);
+        // Backward compatibility: accept legacy single phase_id as a one-item array.
+        const normalizedPhaseIds = Array.isArray(phase_ids)
+            ? Array.from(new Set(phase_ids))
+            : (typeof phase_id === "number" ? [phase_id] : []);
         // Validate required fields
         if (!name || typeof name !== "string" || !name.trim()) {
             return reply.status(400).send({ error: "Task name is required" });
         }
-        if (typeof department_id !== "number" || Number.isNaN(department_id)) {
-            return reply.status(400).send({ error: "Department id is required" });
+        if (normalizedDepartmentIds.length === 0 ||
+            normalizedDepartmentIds.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)) {
+            return reply.status(400).send({ error: "At least one valid department id is required" });
         }
-        if (typeof phase_id !== "number" || Number.isNaN(phase_id)) {
-            return reply.status(400).send({ error: "Phase id is required" });
+        if (normalizedPhaseIds.length === 0 ||
+            normalizedPhaseIds.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)) {
+            return reply.status(400).send({ error: "At least one valid phase id is required" });
         }
         const user = request.user;
         const object_id = user?.oid;
@@ -1114,27 +1280,38 @@ async function timesheetRoutes(fastify, opts) {
                 return reply.status(404).send({ error: "Employee not found" });
             if (requester.admin !== true)
                 return reply.status(403).send({ error: "Admin access required" });
-            // Verify department exists
-            const department = await prismaClient_1.default.department.findUnique({
-                where: { id: department_id },
-                select: { id: true },
-            });
-            if (!department) {
-                return reply.status(400).send({ error: "Department not found" });
+            const trimmedName = name.trim();
+            const conflicts = await findTaskNameConflicts(trimmedName);
+            if (conflicts.exact) {
+                return reply.status(409).send({
+                    error: `Task name already exists: ${conflicts.exact.name}`,
+                });
             }
-            // Verify phase exists
-            const phase = await prismaClient_1.default.phase.findUnique({
-                where: { id: phase_id },
+            if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+                return reply.status(409).send({
+                    error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+                });
+            }
+            // Verify all departments exist
+            const existingDepartments = await prismaClient_1.default.department.findMany({
+                where: { id: { in: normalizedDepartmentIds } },
                 select: { id: true },
             });
-            if (!phase) {
-                return reply.status(400).send({ error: "Phase not found" });
+            if (existingDepartments.length !== normalizedDepartmentIds.length) {
+                return reply.status(400).send({ error: "One or more departments not found" });
+            }
+            // Verify phases exist
+            const existingPhases = await prismaClient_1.default.phase.findMany({
+                where: { id: { in: normalizedPhaseIds } },
+                select: { id: true },
+            });
+            if (existingPhases.length !== normalizedPhaseIds.length) {
+                return reply.status(400).send({ error: "One or more phases not found" });
             }
             // Create the task
             const task = await prismaClient_1.default.task.create({
                 data: {
-                    name: name.trim(),
-                    department_id,
+                    name: trimmedName,
                     task_type: "PROJECT",
                     active: true, // Default to active
                     enabled: typeof enabled === "boolean" ? enabled : true, // Default to enabled (qualifying)
@@ -1144,18 +1321,25 @@ async function timesheetRoutes(fastify, opts) {
                     name: true,
                     enabled: true,
                     active: true,
-                    department_id: true,
                     task_type: true,
                 },
             });
-            // Link task to phase
-            await prismaClient_1.default.phase_task.create({
-                data: {
+            // Link task to phases and departments (both required for employee task visibility)
+            await prismaClient_1.default.phase_task.createMany({
+                data: normalizedPhaseIds.map((phaseId) => ({
                     task_id: task.id,
-                    phase_id,
-                },
+                    phase_id: phaseId,
+                })),
+                skipDuplicates: true,
             });
-            fastify.log.info({ action: "createTaskSuccess", taskId: task.id, department_id, phase_id, object_id }, "Task created successfully");
+            await prismaClient_1.default.department_task.createMany({
+                data: normalizedDepartmentIds.map((deptId) => ({
+                    task_id: task.id,
+                    department_id: deptId,
+                })),
+                skipDuplicates: true,
+            });
+            fastify.log.info({ action: "createTaskSuccess", taskId: task.id, department_ids: normalizedDepartmentIds, phase_ids: normalizedPhaseIds, object_id }, "Task created successfully");
             return reply.status(201).send({ task });
         }
         catch (err) {
@@ -1165,7 +1349,7 @@ async function timesheetRoutes(fastify, opts) {
     });
     // POST /tasks/sustaining - create a new sustaining task with multiple departments (admin only)
     fastify.post("/tasks/sustaining", async (request, reply) => {
-        const { name, department_ids, enabled } = request.body ?? {};
+        const { name, department_ids, enabled, allowSimilarName } = request.body ?? {};
         if (!name || typeof name !== "string" || !name.trim()) {
             return reply.status(400).send({ error: "Task name is required" });
         }
@@ -1186,6 +1370,18 @@ async function timesheetRoutes(fastify, opts) {
                 return reply.status(404).send({ error: "Employee not found" });
             if (requester.admin !== true)
                 return reply.status(403).send({ error: "Admin access required" });
+            const trimmedName = name.trim();
+            const conflicts = await findTaskNameConflicts(trimmedName);
+            if (conflicts.exact) {
+                return reply.status(409).send({
+                    error: `Task name already exists: ${conflicts.exact.name}`,
+                });
+            }
+            if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+                return reply.status(409).send({
+                    error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+                });
+            }
             // Verify all departments exist
             const existingDepts = await prismaClient_1.default.department.findMany({
                 where: { id: { in: department_ids } },
@@ -1197,7 +1393,7 @@ async function timesheetRoutes(fastify, opts) {
             // Create the sustaining task
             const task = await prismaClient_1.default.task.create({
                 data: {
-                    name: name.trim(),
+                    name: trimmedName,
                     task_type: "SUSTAINING",
                     active: true,
                     enabled: typeof enabled === "boolean" ? enabled : true,
@@ -1291,7 +1487,6 @@ async function timesheetRoutes(fastify, opts) {
                     name: true,
                     enabled: true,
                     active: true,
-                    department_id: true,
                     task_type: true,
                 },
             });
@@ -1335,7 +1530,6 @@ async function timesheetRoutes(fastify, opts) {
                     name: true,
                     enabled: true,
                     active: true,
-                    department_id: true,
                     task_type: true,
                 },
             });
@@ -1352,7 +1546,7 @@ async function timesheetRoutes(fastify, opts) {
         if (Number.isNaN(taskId)) {
             return reply.status(400).send({ error: "Task id required" });
         }
-        const { name } = request.body ?? {};
+        const { name, allowSimilarName } = request.body ?? {};
         if (!name || typeof name !== "string" || !name.trim()) {
             return reply.status(400).send({ error: "Task name is required" });
         }
@@ -1371,15 +1565,26 @@ async function timesheetRoutes(fastify, opts) {
             if (!existingTask) {
                 return reply.status(404).send({ error: "Task not found" });
             }
+            const trimmedName = name.trim();
+            const conflicts = await findTaskNameConflicts(trimmedName, taskId);
+            if (conflicts.exact) {
+                return reply.status(409).send({
+                    error: `Task name already exists: ${conflicts.exact.name}`,
+                });
+            }
+            if (conflicts.similar.length > 0 && allowSimilarName !== true) {
+                return reply.status(409).send({
+                    error: `Task name is very similar to existing task(s): ${formatSimilarTaskNames(conflicts.similar)}. Use a clearer name.`,
+                });
+            }
             const task = await prismaClient_1.default.task.update({
                 where: { id: taskId },
-                data: { name: name.trim() },
+                data: { name: trimmedName },
                 select: {
                     id: true,
                     name: true,
                     enabled: true,
                     active: true,
-                    department_id: true,
                     task_type: true,
                 },
             });
@@ -1388,6 +1593,157 @@ async function timesheetRoutes(fastify, opts) {
         catch (err) {
             fastify.log.error(err);
             return reply.status(500).send({ error: "Failed to update task name" });
+        }
+    });
+    // PATCH /tasks/:id/departments - replace task department assignments (admin only)
+    fastify.patch("/tasks/:id/departments", async (request, reply) => {
+        const taskId = Number(request.params.id);
+        if (Number.isNaN(taskId)) {
+            return reply.status(400).send({ error: "Task id required" });
+        }
+        const { department_ids } = request.body ?? {};
+        if (!Array.isArray(department_ids) ||
+            department_ids.length === 0 ||
+            department_ids.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)) {
+            return reply.status(400).send({ error: "At least one valid department id is required" });
+        }
+        const normalizedDepartmentIds = Array.from(new Set(department_ids));
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({ where: { object_id }, select: { admin: true } });
+            if (!requester)
+                return reply.status(404).send({ error: "Employee not found" });
+            if (requester.admin !== true)
+                return reply.status(403).send({ error: "Admin access required" });
+            const existingTask = await prismaClient_1.default.task.findUnique({ where: { id: taskId }, select: { id: true } });
+            if (!existingTask) {
+                return reply.status(404).send({ error: "Task not found" });
+            }
+            const existingDepartments = await prismaClient_1.default.department.findMany({
+                where: { id: { in: normalizedDepartmentIds } },
+                select: { id: true },
+            });
+            if (existingDepartments.length !== normalizedDepartmentIds.length) {
+                return reply.status(400).send({ error: "One or more departments not found" });
+            }
+            await prismaClient_1.default.$transaction(async (tx) => {
+                await tx.department_task.deleteMany({ where: { task_id: taskId } });
+                await tx.department_task.createMany({
+                    data: normalizedDepartmentIds.map((deptId) => ({ department_id: deptId, task_id: taskId })),
+                });
+            });
+            const task = await prismaClient_1.default.task.findUnique({
+                where: { id: taskId },
+                select: {
+                    id: true,
+                    name: true,
+                    enabled: true,
+                    active: true,
+                    task_type: true,
+                    department_tasks: {
+                        select: {
+                            department: { select: { id: true, name: true } },
+                        },
+                    },
+                },
+            });
+            if (!task) {
+                return reply.status(404).send({ error: "Task not found" });
+            }
+            return reply.status(200).send({
+                task: {
+                    id: task.id,
+                    name: task.name,
+                    enabled: task.enabled,
+                    active: task.active,
+                    task_type: task.task_type,
+                    departments: task.department_tasks.map((dt) => ({ id: dt.department.id, name: dt.department.name })),
+                },
+            });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to update task departments" });
+        }
+    });
+    // PATCH /tasks/:id/phases - replace task phase assignments (admin only)
+    fastify.patch("/tasks/:id/phases", async (request, reply) => {
+        const taskId = Number(request.params.id);
+        if (Number.isNaN(taskId)) {
+            return reply.status(400).send({ error: "Task id required" });
+        }
+        const { phase_ids } = request.body ?? {};
+        if (!Array.isArray(phase_ids) ||
+            phase_ids.length === 0 ||
+            phase_ids.some((id) => !Number.isInteger(id) || Number.isNaN(id) || id <= 0)) {
+            return reply.status(400).send({ error: "At least one valid phase id is required" });
+        }
+        const normalizedPhaseIds = Array.from(new Set(phase_ids));
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        try {
+            const requester = await prismaClient_1.default.employee.findUnique({ where: { object_id }, select: { admin: true } });
+            if (!requester)
+                return reply.status(404).send({ error: "Employee not found" });
+            if (requester.admin !== true)
+                return reply.status(403).send({ error: "Admin access required" });
+            const existingTask = await prismaClient_1.default.task.findUnique({ where: { id: taskId }, select: { id: true } });
+            if (!existingTask) {
+                return reply.status(404).send({ error: "Task not found" });
+            }
+            const existingPhases = await prismaClient_1.default.phase.findMany({
+                where: { id: { in: normalizedPhaseIds } },
+                select: { id: true },
+            });
+            if (existingPhases.length !== normalizedPhaseIds.length) {
+                return reply.status(400).send({ error: "One or more phases not found" });
+            }
+            await prismaClient_1.default.$transaction(async (tx) => {
+                await tx.phase_task.deleteMany({ where: { task_id: taskId } });
+                await tx.phase_task.createMany({
+                    data: normalizedPhaseIds.map((phaseId) => ({ phase_id: phaseId, task_id: taskId })),
+                    skipDuplicates: true,
+                });
+            });
+            const task = await prismaClient_1.default.task.findUnique({
+                where: { id: taskId },
+                select: {
+                    id: true,
+                    name: true,
+                    enabled: true,
+                    active: true,
+                    task_type: true,
+                    phase_tasks: {
+                        select: {
+                            phase: { select: { id: true, name: true } },
+                        },
+                    },
+                },
+            });
+            if (!task) {
+                return reply.status(404).send({ error: "Task not found" });
+            }
+            return reply.status(200).send({
+                task: {
+                    id: task.id,
+                    name: task.name,
+                    enabled: task.enabled,
+                    active: task.active,
+                    task_type: task.task_type,
+                    phases: task.phase_tasks.map((pt) => ({ id: pt.phase.id, name: pt.phase.name })),
+                },
+            });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to update task phases" });
         }
     });
     // POST /entries - create a new timesheet entry for the authenticated user
@@ -1402,22 +1758,46 @@ async function timesheetRoutes(fastify, opts) {
             return reply.status(400).send({ error: "projectId, date, startTime and endTime are required" });
         }
         try {
-            const employee = await prismaClient_1.default.employee.findUnique({ where: { object_id } });
-            if (!employee) {
+            const requesterEmployee = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { id: true, admin: true, department_id: true, region_id: true },
+            });
+            if (!requesterEmployee) {
                 return reply.status(404).send({ error: "Employee not found" });
+            }
+            const { employeeId } = request.query;
+            const requestedEmployeeId = employeeId != null ? Number(employeeId) : undefined;
+            let targetEmployeeId = requesterEmployee.id;
+            let targetEmployeeDepartmentId = requesterEmployee.department_id;
+            let targetEmployeeRegionId = requesterEmployee.region_id ?? 1;
+            if (requestedEmployeeId != null && !Number.isNaN(requestedEmployeeId)) {
+                if (requestedEmployeeId !== requesterEmployee.id && requesterEmployee.admin !== true) {
+                    return reply.status(403).send({ error: "Admin access required" });
+                }
+                const targetEmployee = await prismaClient_1.default.employee.findUnique({
+                    where: { id: requestedEmployeeId },
+                    select: { id: true, department_id: true, region_id: true },
+                });
+                if (!targetEmployee) {
+                    return reply.status(404).send({ error: "Target employee not found" });
+                }
+                targetEmployeeId = targetEmployee.id;
+                targetEmployeeDepartmentId = targetEmployee.department_id;
+                targetEmployeeRegionId = targetEmployee.region_id ?? 1;
             }
             const timezoneOffsetMinutes = getClientTimezoneOffsetMinutes(request);
             const policyDateKey = valueToDateKey(date);
             if (dateKeyToDayNumber(policyDateKey) == null) {
                 return reply.status(400).send({ error: "Invalid date format" });
             }
-            if (employee.admin !== true &&
+            if (requesterEmployee.admin !== true &&
                 isEarlierThanPreviousWeekForClient(policyDateKey, timezoneOffsetMinutes)) {
                 return reply.status(403).send({
                     error: "Entries cannot be created earlier than last week unless you are an admin",
                 });
             }
-            if (employee.admin !== true &&
+            if (requesterEmployee.admin !== true &&
+                ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF &&
                 isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
                 isPreviousWeekDateForClient(policyDateKey, timezoneOffsetMinutes)) {
                 return reply.status(403).send({
@@ -1453,7 +1833,7 @@ async function timesheetRoutes(fastify, opts) {
             const isProtectedAbsenceRequest = PROTECTED_PROJECT_IDS.has(projectIdNumber);
             const isLeaveRequest = projectIdNumber === LEAVE_PROJECT_ID;
             const isHolidayRequest = projectIdNumber === HOLIDAY_PROJECT_ID;
-            const regionHoliday = await findRegionHolidayForDate(employee.region_id ?? 1, policyDateKey);
+            const regionHoliday = await findRegionHolidayForDate(targetEmployeeRegionId, policyDateKey);
             if (!isProtectedAbsenceRequest && regionHoliday) {
                 return reply.status(409).send({
                     error: "Cannot create entry that overlaps approved leave/holiday",
@@ -1461,7 +1841,7 @@ async function timesheetRoutes(fastify, opts) {
             }
             const overlapping = await prismaClient_1.default.entry.findMany({
                 where: {
-                    employee_id: employee.id,
+                    employee_id: targetEmployeeId,
                     date: entryDate,
                     start_time: { lt: endDateTime },
                     end_time: { gt: startDateTime },
@@ -1516,6 +1896,36 @@ async function timesheetRoutes(fastify, opts) {
                 }
                 projectPhaseId = projectPhase.id;
             }
+            if (!isProtectedAbsenceRequest && normalizedTaskId != null) {
+                if (!Number.isInteger(normalizedTaskId) || normalizedTaskId <= 0) {
+                    return reply.status(400).send({ error: "Invalid task id" });
+                }
+                const normalizedPhaseId = phaseId != null ? Number(phaseId) : null;
+                if (normalizedPhaseId == null || Number.isNaN(normalizedPhaseId) || normalizedPhaseId <= 0) {
+                    return reply.status(400).send({ error: "A valid phase is required when selecting a task" });
+                }
+                if (targetEmployeeDepartmentId == null) {
+                    return reply.status(400).send({ error: "Employee department is required to select a task" });
+                }
+                const taskRecord = await prismaClient_1.default.task.findFirst({
+                    where: {
+                        id: normalizedTaskId,
+                        active: true,
+                        phase_tasks: {
+                            some: { phase_id: normalizedPhaseId },
+                        },
+                        department_tasks: {
+                            some: { department_id: targetEmployeeDepartmentId },
+                        },
+                    },
+                    select: { id: true },
+                });
+                if (!taskRecord) {
+                    return reply.status(400).send({
+                        error: "Selected task is not available for the selected phase and your department",
+                    });
+                }
+            }
             if (isProtectedAbsenceRequest) {
                 normalizedTaskId = null;
                 projectPhaseId = null;
@@ -1532,7 +1942,7 @@ async function timesheetRoutes(fastify, opts) {
             }
             const created = await prismaClient_1.default.entry.create({
                 data: {
-                    employee_id: employee.id,
+                    employee_id: targetEmployeeId,
                     project_id: projectIdNumber,
                     task_id: normalizedTaskId,
                     project_phase_id: projectPhaseId,
@@ -1595,6 +2005,7 @@ async function timesheetRoutes(fastify, opts) {
                 });
             }
             if (employee.admin !== true &&
+                ENFORCE_PREVIOUS_WEEK_TUESDAY_CUTOFF &&
                 isPastPreviousWeekCutoffForClient(timezoneOffsetMinutes) &&
                 (isPreviousWeekDateForClient(existingPolicyDateKey, timezoneOffsetMinutes) ||
                     isPreviousWeekDateForClient(requestedPolicyDateKey, timezoneOffsetMinutes))) {
@@ -1664,6 +2075,44 @@ async function timesheetRoutes(fastify, opts) {
                     return reply.status(400).send({ error: "Selected phase is not linked to project" });
                 }
                 projectPhaseId = projectPhase.id;
+            }
+            const entryEmployee = await prismaClient_1.default.employee.findUnique({
+                where: { id: targetEmployeeId },
+                select: { department_id: true },
+            });
+            if (!entryEmployee) {
+                return reply.status(404).send({ error: "Employee not found" });
+            }
+            if (taskId != null) {
+                const normalizedPhaseId = phaseId != null ? Number(phaseId) : null;
+                if (normalizedPhaseId == null || Number.isNaN(normalizedPhaseId) || normalizedPhaseId <= 0) {
+                    return reply.status(400).send({ error: "A valid phase is required when selecting a task" });
+                }
+                if (entryEmployee.department_id == null) {
+                    return reply.status(400).send({ error: "Employee department is required to select a task" });
+                }
+                const normalizedTaskId = Number(taskId);
+                if (!Number.isInteger(normalizedTaskId) || normalizedTaskId <= 0) {
+                    return reply.status(400).send({ error: "Invalid task id" });
+                }
+                const taskRecord = await prismaClient_1.default.task.findFirst({
+                    where: {
+                        id: normalizedTaskId,
+                        active: true,
+                        phase_tasks: {
+                            some: { phase_id: normalizedPhaseId },
+                        },
+                        department_tasks: {
+                            some: { department_id: entryEmployee.department_id },
+                        },
+                    },
+                    select: { id: true },
+                });
+                if (!taskRecord) {
+                    return reply.status(400).send({
+                        error: "Selected task is not available for the selected phase and employee department",
+                    });
+                }
             }
             const updated = await prismaClient_1.default.entry.update({
                 where: { id: entryId },
