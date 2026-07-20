@@ -1961,6 +1961,67 @@ async function timesheetRoutes(fastify, opts) {
             return reply.status(500).send({ error: "Failed to create entry" });
         }
     });
+    // PATCH /entries/:id/leave-time - adjust start/end time of a leave entry without changing hours
+    fastify.patch("/entries/:id/leave-time", async (request, reply) => {
+        const user = request.user;
+        const object_id = user?.oid;
+        if (!object_id) {
+            return reply.status(401).send({ error: "Authenticated user required" });
+        }
+        const entryId = Number(request.params.id);
+        if (isNaN(entryId)) {
+            return reply.status(400).send({ error: "Invalid entry id" });
+        }
+        const { startTime } = (request.body ?? {});
+        if (!startTime || !/^\d{2}:\d{2}$/.test(startTime)) {
+            return reply.status(400).send({ error: "startTime (HH:MM) is required" });
+        }
+        try {
+            const employee = await prismaClient_1.default.employee.findUnique({
+                where: { object_id },
+                select: { id: true, admin: true },
+            });
+            if (!employee) {
+                return reply.status(404).send({ error: "Employee not found" });
+            }
+            const existing = await prismaClient_1.default.entry.findUnique({ where: { id: entryId } });
+            if (!existing) {
+                return reply.status(404).send({ error: "Entry not found" });
+            }
+            if (existing.employee_id !== employee.id && employee.admin !== true) {
+                return reply.status(403).send({ error: "Cannot edit other user's entries" });
+            }
+            // Only leave entries (not holiday) can have their time adjusted
+            if (!isLeaveEntryRecord(existing)) {
+                return reply.status(400).send({ error: "Only leave entries can have their time adjusted" });
+            }
+            const [startH, startM] = startTime.split(":").map(Number);
+            if (isNaN(startH) || isNaN(startM)) {
+                return reply.status(400).send({ error: "Invalid startTime format" });
+            }
+            const hours = Number(existing.hours);
+            const endTotalMinutes = startH * 60 + startM + Math.round(hours * 60);
+            if (endTotalMinutes > 24 * 60) {
+                return reply.status(400).send({ error: "Leave entry would extend past midnight with this start time" });
+            }
+            const startDateTime = new Date(Date.UTC(1970, 0, 1, startH, startM, 0, 0));
+            const endH = Math.floor(endTotalMinutes / 60);
+            const endM = endTotalMinutes % 60;
+            const endDateTime = new Date(Date.UTC(1970, 0, 1, endH, endM, 0, 0));
+            const updated = await prismaClient_1.default.entry.update({
+                where: { id: entryId },
+                data: {
+                    start_time: startDateTime,
+                    end_time: endDateTime,
+                },
+            });
+            return reply.status(200).send({ entry: updated });
+        }
+        catch (err) {
+            fastify.log.error(err);
+            return reply.status(500).send({ error: "Failed to update leave entry time" });
+        }
+    });
     // PUT /entries/:id - update an existing entry for the authenticated user
     fastify.put("/entries/:id", async (request, reply) => {
         const user = request.user;

@@ -491,13 +491,19 @@ async function runBambooLeaveSync(prisma, logger) {
                 date,
             },
         });
-        const hasOnlyMatchingBambooLeave = existing.length === 1 &&
-            isBambooLeaveEntry(existing[0]) &&
-            Number(existing[0].hours) === item.hours &&
-            (existing[0].notes ?? "") === note;
-        if (hasOnlyMatchingBambooLeave) {
+        const existingBambooLeave = existing.find((e) => isBambooLeaveEntry(e));
+        // If an existing Bamboo leave entry has the same hours, preserve the user's
+        // adjusted start/end time and only update notes if they have changed.
+        if (existingBambooLeave && Number(existingBambooLeave.hours) === item.hours) {
+            if ((existingBambooLeave.notes ?? "") !== note) {
+                await prisma.entry.update({
+                    where: { id: existingBambooLeave.id },
+                    data: { notes: note },
+                });
+            }
             continue;
         }
+        // Hours changed or no existing Bamboo leave — delete stale leave and recreate.
         const deleted = await prisma.entry.deleteMany({
             where: {
                 employee_id: item.employeeId,
