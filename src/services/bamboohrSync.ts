@@ -620,7 +620,7 @@ export async function runBambooLeaveSync(
     }
   }
 
-  // Upsert expected leave days and overwrite other entries for those dates.
+  // Upsert expected leave days without wiping unrelated entries for the same date.
   for (const item of dailyMap.values()) {
     summary.processedDays += 1;
 
@@ -646,15 +646,15 @@ export async function runBambooLeaveSync(
       continue;
     }
 
-    if (existing.length > 0) {
-      const deleted = await prisma.entry.deleteMany({
-        where: {
-          employee_id: item.employeeId,
-          date,
-        },
-      });
-      summary.deletedEntries += deleted.count;
-    }
+    const deleted = await prisma.entry.deleteMany({
+      where: {
+        employee_id: item.employeeId,
+        date,
+        project_id: LEAVE_PROJECT_ID,
+        notes: { startsWith: LEAVE_NOTE_PREFIX },
+      },
+    });
+    summary.deletedEntries += deleted.count;
 
     await prisma.entry.create({
       data: {

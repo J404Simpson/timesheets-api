@@ -11,7 +11,6 @@ const LEAVE_NOTE_PREFIX = "[BambooHR Leave]";
 const LOOKBACK_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKBACK_DAYS ?? 14);
 const LOOKAHEAD_DAYS = Number(process.env.BAMBOOHR_SYNC_LOOKAHEAD_DAYS ?? 0);
 const HOURS_PER_DAY = Number(process.env.BAMBOOHR_HOURS_PER_DAY ?? 8);
-const FRIDAY_HOURS_PER_DAY = Number(process.env.BAMBOOHR_FRIDAY_HOURS_PER_DAY ?? 7);
 const CANCEL_LOOKBACK_DAYS = Number(process.env.BAMBOOHR_CANCEL_LOOKBACK_DAYS ?? 90);
 function getConfig() {
     const subdomain = process.env.BAMBOOHR_SUBDOMAIN?.trim() ?? "";
@@ -128,9 +127,6 @@ function addDays(date, days) {
     copy.setUTCDate(copy.getUTCDate() + days);
     return copy;
 }
-function isFriday(dateKey) {
-    return new Date(`${dateKey}T00:00:00.000Z`).getUTCDay() === 5;
-}
 function expandDateRange(start, end) {
     const out = [];
     let current = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
@@ -145,20 +141,12 @@ function splitRequestIntoDailyHours(request) {
     const amountUnit = typeof request.amount === "object" && request.amount !== null
         ? String(request.amount.unit ?? "hours").toLowerCase()
         : "hours";
-    const toHours = (raw, dateKey) => {
+    const toHours = (raw) => {
         const h = parseHours(raw);
         if (h === null)
             return null;
         if (amountUnit === "days") {
-            const normalHours = Number((h * HOURS_PER_DAY).toFixed(2));
-            if (dateKey && isFriday(dateKey) && normalHours === HOURS_PER_DAY) {
-                return FRIDAY_HOURS_PER_DAY;
-            }
-            return normalHours;
-        }
-        // For hours unit, still apply Friday cap if value equals a full working day
-        if (dateKey && isFriday(dateKey) && h === HOURS_PER_DAY) {
-            return FRIDAY_HOURS_PER_DAY;
+            return Number((h * HOURS_PER_DAY).toFixed(2));
         }
         return h;
     };
@@ -167,8 +155,7 @@ function splitRequestIntoDailyHours(request) {
         const mapped = explicitDaily
             .map((d) => {
             const date = parseDate(d.date ?? d.day ?? d.requestDate);
-            const dk = date ? toDateKey(date) : undefined;
-            const hours = toHours(d.hours ?? d.amount ?? d.duration, dk);
+            const hours = toHours(d.hours ?? d.amount ?? d.duration);
             if (!date || !hours)
                 return null;
             return { dateKey: toDateKey(date), hours };
@@ -182,7 +169,7 @@ function splitRequestIntoDailyHours(request) {
         const mapped = Object.entries(explicitDaily)
             .map(([dateStr, amount]) => {
             const date = parseDate(dateStr);
-            const hours = toHours(amount, dateStr);
+            const hours = toHours(amount);
             if (!date || !hours)
                 return null;
             return { dateKey: toDateKey(date), hours };
@@ -206,9 +193,7 @@ function splitRequestIntoDailyHours(request) {
     const hoursPerDay = Number((totalHours / dateKeys.length).toFixed(2));
     return dateKeys.map((dateKey) => ({
         dateKey,
-        hours: (amountUnit === "days" && isFriday(dateKey) && hoursPerDay === HOURS_PER_DAY)
-            ? FRIDAY_HOURS_PER_DAY
-            : hoursPerDay,
+        hours: hoursPerDay,
     }));
 }
 async function fetchBambooRequests(windowStart, windowEnd, status = "approved") {
@@ -493,7 +478,7 @@ async function runBambooLeaveSync(prisma, logger) {
             }
         }
     }
-    // Upsert expected leave days and overwrite other entries for those dates.
+    // Upsert expected leave days without wiping unrelated entries for the same date.
     for (const item of dailyMap.values()) {
         summary.processedDays += 1;
         const note = `${LEAVE_NOTE_PREFIX} requestIds=${Array.from(item.requestIds).join(",")}`;
@@ -513,15 +498,15 @@ async function runBambooLeaveSync(prisma, logger) {
         if (hasOnlyMatchingBambooLeave) {
             continue;
         }
-        if (existing.length > 0) {
-            const deleted = await prisma.entry.deleteMany({
-                where: {
-                    employee_id: item.employeeId,
-                    date,
-                },
-            });
-            summary.deletedEntries += deleted.count;
-        }
+        const deleted = await prisma.entry.deleteMany({
+            where: {
+                employee_id: item.employeeId,
+                date,
+                project_id: LEAVE_PROJECT_ID,
+                notes: { startsWith: LEAVE_NOTE_PREFIX },
+            },
+        });
+        summary.deletedEntries += deleted.count;
         await prisma.entry.create({
             data: {
                 employee_id: item.employeeId,
